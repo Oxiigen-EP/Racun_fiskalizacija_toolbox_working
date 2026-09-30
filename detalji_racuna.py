@@ -203,7 +203,9 @@ class DetaljiRacunaDialog(QDialog):
         if self._racun:
             iznos = self._racun[14] or 0.0
             iznos_lbl = QLabel(f"{iznos:,.2f} EUR")
-            iznos_lbl.setStyleSheet(f"color: {_tc()['success']}; font-size: 18px; font-weight: bold; background-color: transparent;")
+            iznos_lbl.setStyleSheet(
+                f"color: {'#ff9e9e' if iznos < 0 else '#69f0ae'}; font-size: 18px; "
+                "font-weight: bold; background-color: transparent;")
             hl.addWidget(iznos_lbl)
 
         outer.addWidget(header)
@@ -267,7 +269,7 @@ class DetaljiRacunaDialog(QDialog):
         fl.addStretch()
 
         if self._racun:
-            pdf_btn = QPushButton("🖨️  Rekreira PDF")
+            pdf_btn = QPushButton("🖨️  Rekreiraj PDF")
             pdf_btn.setFixedWidth(140)
             pdf_btn.setStyleSheet(
                 "QPushButton { background-color: #1565c0; color: white; border: none;"
@@ -726,6 +728,23 @@ class DetaljiRacunaDialog(QDialog):
                 f = item.font(); f.setBold(True); item.setFont(f)
                 tbl.setItem(row, col, item)
 
+            from PySide6.QtWidgets import QStyledItemDelegate
+
+            class _ZbrojDelegate(QStyledItemDelegate):
+                def paint(self, painter, option, index):
+                    painter.save()
+                    painter.fillRect(option.rect, QColor(_tc()['table_header']))
+                    painter.setPen(QColor("#ffffff"))
+                    f = painter.font(); f.setBold(True); painter.setFont(f)
+                    al = index.data(Qt.ItemDataRole.TextAlignmentRole)
+                    al = Qt.AlignmentFlag(int(al)) if al is not None else (
+                        Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+                    painter.drawText(option.rect.adjusted(7, 0, -7, 0), al,
+                                     str(index.data() or ""))
+                    painter.restore()
+
+            tbl._zbroj_delegate = _ZbrojDelegate(tbl)
+            tbl.setItemDelegateForRow(row, tbl._zbroj_delegate)
             tbl.item(row, 0).setText("UKUPNO")
             tbl.item(row, 0).setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
             if u_pdv:
@@ -769,17 +788,17 @@ class DetaljiRacunaDialog(QDialog):
 
         uk_lbl = QLabel("UKUPAN IZNOS ZA PLATITI:")
         uk_lbl.setStyleSheet(
-            f"color: {_ck['text_muted']}; font-size: 11px; font-weight: bold;"
+            "color: #dfe6ee; font-size: 12px; font-weight: bold;"
             "background-color: transparent;")
         uk_hl.addWidget(uk_lbl)
         uk_hl.addStretch()
 
         uk_iznos = QLabel(f"{ukupan_iznos:,.2f} EUR")
         uk_iznos.setStyleSheet(
-            f"color: {_ck['danger_text']}; font-size: 20px; font-weight: bold;"
+            "color: #ff9e9e; font-size: 22px; font-weight: bold;"
             "background-color: transparent;"
             if (ukupan_iznos or 0) < 0 else
-            f"color: {_ck['success']}; font-size: 20px; font-weight: bold;"
+            "color: #69f0ae; font-size: 22px; font-weight: bold;"
             "background-color: transparent;")
         uk_hl.addWidget(uk_iznos)
 

@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout,
                                QTableWidget, QTableWidgetItem, QHeaderView,
                                QDateEdit, QTextEdit, QScrollArea, QFrame)
 from PySide6.QtCore import Qt, QDate, Signal
-from PySide6.QtGui import QFont, QColor
+from PySide6.QtGui import QFont, QColor, QPalette
 
 from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
@@ -121,51 +121,17 @@ class Fiskalizacija:
     def generiraj_zki(self, oib, datum_vrijeme, broj_racuna,
                       oznaka_poslovnog_prostora, oznaka_naplatnog_uredaja,
                       ukupan_iznos):
-        iznos_str = f"{ukupan_iznos:.2f}".replace('.', ',')
-        data = (f"{oib}{datum_vrijeme}{broj_racuna}"
+        # Spec 2.7, pogl. 12: datVrij = 'dd.MM.yyyy HH:mm:ss' (razmak, bez 'T'),
+        # decimalni separator je točka, potpis RSA-SHA256
+        datv_zki = datum_vrijeme.replace('T', ' ')
+        iznos_str = f"{ukupan_iznos:.2f}"
+        data = (f"{oib}{datv_zki}{broj_racuna}"
                 f"{oznaka_poslovnog_prostora}{oznaka_naplatnog_uredaja}{iznos_str}")
         signature = self.private_key.sign(
-            data.encode('utf-8'), padding.PKCS1v15(), hashes.SHA1())
+            data.encode('utf-8'), padding.PKCS1v15(), hashes.SHA256())
         return hashlib.md5(signature).hexdigest()
 
-    # def generiraj_qr_kod(self, jir=None, zki=None, datum_vrijeme=None,
-    #                      ukupan_iznos=None):
-    #     if not QR_DOSTUPAN:
-    #         return None
-    #     if not (jir or zki):
-    #         raise ValueError("Mora biti naveden JIR ili ZKI!")
-    #
-    #     dt = (datetime.strptime(datum_vrijeme, "%d.%m.%YT%H:%M:%S")
-    #           if isinstance(datum_vrijeme, str) else datum_vrijeme)
-    #
-    #     datv = dt.strftime("%Y%m%d_%H%M")
-    #     iznos_str = f"{ukupan_iznos:.2f}".replace('.', ',')
-    #
-    #     if jir:
-    #         qr_url = f"https://porezna.gov.hr/rn?jir={jir}&datv={datv}&izn={iznos_str}"
-    #     else:
-    #         qr_url = f"https://porezna.gov.hr/rn?zki={zki}&datv={datv}&izn={iznos_str}"
-    #
-    #     print(f"📱 QR URL: {qr_url}")
-    #     qr = qrcode.QRCode(
-    #         version=None,
-    #         error_correction=qrcode.constants.ERROR_CORRECT_L,
-    #         box_size=10,
-    #         border=4,
-    #     )
-    #     qr.add_data(qr_url)
-    #     qr.make(fit=True)
-    #     return qr.make_image(fill_color="black", back_color="white")
-    #
-    # def qr_kod_kao_bytes(self, jir=None, zki=None, datum_vrijeme=None,
-    #                      ukupan_iznos=None):
-    #     img = self.generiraj_qr_kod(jir, zki, datum_vrijeme, ukupan_iznos)
-    #     if img is None:
-    #         return None
-    #     buf = BytesIO()
-    #     img.save(buf, format='PNG')
-    #     buf.seek(0)
-    #     return buf
+
     def generiraj_qr_kod(self, jir=None, zki=None, datum_vrijeme=None,
                          ukupan_iznos=None):
         """
@@ -188,7 +154,8 @@ class Fiskalizacija:
             dt = datum_vrijeme
 
         datv = dt.strftime("%Y%m%d_%H%M")
-        iznos_str = f"{ukupan_iznos:.2f}".replace('.', ',')
+        # iznos u centima, bez separatora (npr. 125,00 EUR -> 12500)
+        iznos_str = str(int(round(float(ukupan_iznos) * 100)))
 
         if jir:
             qr_url = f"https://porezna.gov.hr/rn?jir={jir}&datv={datv}&izn={iznos_str}"
@@ -219,10 +186,10 @@ class Fiskalizacija:
 
     def _potpiši_xml_enveloped(self, xml_string):
         try:
-            print("🔐 Potpisujem XML (RSA-SHA1)...")
+            print("🔐 Potpisujem XML (RSA-SHA256)...")
             root = etree.fromstring(xml_string.encode('utf-8'))
             canonical_root = etree.tostring(root, method='c14n', exclusive=True)
-            sha1_hash = hashlib.sha1(canonical_root).digest()
+            sha1_hash = hashlib.sha256(canonical_root).digest()
             digest_b64 = base64.b64encode(sha1_hash).decode('utf-8')
 
             sig_ns = '{http://www.w3.org/2000/09/xmldsig#}'
@@ -234,7 +201,7 @@ class Fiskalizacija:
 
             sig_method = etree.SubElement(signed_info, f'{sig_ns}SignatureMethod')
             sig_method.set('Algorithm',
-                           'http://www.w3.org/2000/09/xmldsig#rsa-sha1')
+                           'http://www.w3.org/2001/04/xmldsig-more#rsa-sha256')
 
             ref = etree.SubElement(signed_info, f'{sig_ns}Reference')
             ref.set('URI', '#RacunZahtjev')
@@ -248,14 +215,14 @@ class Fiskalizacija:
 
             digest_method = etree.SubElement(ref, f'{sig_ns}DigestMethod')
             digest_method.set('Algorithm',
-                              'http://www.w3.org/2000/09/xmldsig#sha1')
+                              'http://www.w3.org/2001/04/xmlenc#sha256')
             digest_value = etree.SubElement(ref, f'{sig_ns}DigestValue')
             digest_value.text = digest_b64
 
             canonical_signed_info = etree.tostring(
                 signed_info, method='c14n', exclusive=True)
             signature = self.private_key.sign(
-                canonical_signed_info, padding.PKCS1v15(), hashes.SHA1())
+                canonical_signed_info, padding.PKCS1v15(), hashes.SHA256())
             signature_b64 = base64.b64encode(signature).decode('utf-8')
 
             sig_value = etree.SubElement(signature_elem,
@@ -266,10 +233,14 @@ class Fiskalizacija:
             x509_data = etree.SubElement(key_info, f'{sig_ns}X509Data')
             x509_cert = etree.SubElement(x509_data, f'{sig_ns}X509Certificate')
 
-            with open(self.cert_path, 'r') as f:
-                cert_lines = [l.strip() for l in f.read().split('\n')
-                              if l.strip() and not l.startswith('-----')]
-                x509_cert.text = ''.join(cert_lines)
+            x509_cert.text = base64.b64encode(
+                self.certificate.public_bytes(serialization.Encoding.DER)
+            ).decode('ascii')
+            issuer_serial = etree.SubElement(x509_data, f'{sig_ns}X509IssuerSerial')
+            etree.SubElement(issuer_serial, f'{sig_ns}X509IssuerName').text = \
+                self.certificate.issuer.rfc4514_string()
+            etree.SubElement(issuer_serial, f'{sig_ns}X509SerialNumber').text = \
+                str(self.certificate.serial_number)
 
             root.append(signature_elem)
             print("✅ XML potpisao!")
@@ -578,6 +549,15 @@ def spremi_kupca(naziv, oib, adresa, pravna_osoba):
             conn.commit()
             return postojeci[0]
 
+    postojeci = cursor.execute("""
+        SELECT id FROM kupci
+        WHERE lower(trim(naziv)) = lower(trim(?))
+          AND lower(trim(COALESCE(adresa, ''))) = lower(trim(?))
+          AND lower(trim(COALESCE(oib, ''))) = lower(trim(?))
+    """, (naziv, adresa or "", oib or "")).fetchone()
+    if postojeci:
+        return postojeci[0]
+
     cursor.execute("""
         INSERT INTO kupci (naziv, oib, adresa, pravna_osoba)
         VALUES (?, ?, ?, ?)
@@ -716,7 +696,11 @@ class StavkeWidget(QWidget):
         for i in range(1, 6):
             self.tabla.horizontalHeader().setSectionResizeMode(
                 i, QHeaderView.ResizeMode.ResizeToContents)
-        self.tabla.setMinimumHeight(150)
+        self.tabla.horizontalHeader().setMinimumSectionSize(55)
+        self.tabla.horizontalHeader().setStretchLastSection(False)
+        self.tabla.setWordWrap(False)
+        self.tabla.setMinimumHeight(170)
+        self.tabla.verticalHeader().setDefaultSectionSize(32)
         layout.addWidget(self.tabla)
 
         # Gumbi
@@ -943,7 +927,7 @@ class PregledRacunaWidget(QWidget):
         self.detalji_btn.setEnabled(False)
         self.detalji_btn.clicked.connect(self._otvori_detalje)
         status_layout.addWidget(self.detalji_btn)
-        self.pdf_btn = QPushButton("🖨️  Rekreira PDF")
+        self.pdf_btn = QPushButton("🖨️  Rekreiraj PDF")
         self.pdf_btn.setFixedWidth(140)
         self.pdf_btn.setEnabled(False)
         self.pdf_btn.setStyleSheet(
@@ -1738,12 +1722,14 @@ class BillingApp(QWidget):
         super().__init__()
         self.setWindowTitle("Fiskalizacija računa")
         self.setMinimumWidth(960)
-        self.setMinimumHeight(700)
+        self.setMinimumHeight(760)
 
         self.fiskalizacija = None
         self.config = učitaj_config()
         self.demo_mode = self.config.get("demo_mode", True)
         self._ponuda_izvor_id = None
+        self._odabrani_kupac_id = None
+        self._popunjavanje_kupca = False
 
         import tempfile
         svg_content = b'''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">
@@ -1848,6 +1834,8 @@ class BillingApp(QWidget):
         firma_layout = QFormLayout()
         firma_layout.setSpacing(7)
         firma_layout.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        firma_layout.setFieldGrowthPolicy(
+            QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
 
         self.oib_input = QLineEdit()
         self.oib_input.setText(self.config.get("oib", ""))
@@ -1904,6 +1892,8 @@ class BillingApp(QWidget):
         kupac_layout = QFormLayout()
         kupac_layout.setSpacing(7)
         kupac_layout.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        kupac_layout.setFieldGrowthPolicy(
+            QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
 
         # Red s inputom i gumbom za odabir
         kupac_naziv_row = QWidget()
@@ -1914,6 +1904,8 @@ class BillingApp(QWidget):
 
         self.kupac_naziv_input = QLineEdit()
         self.kupac_naziv_input.setPlaceholderText("Naziv kupca / ime i prezime")
+        self.kupac_naziv_input.textChanged.connect(
+            self._kupac_rucno_promijenjen)
         kupac_naziv_hl.addWidget(self.kupac_naziv_input)
 
         self.odaberi_btn = QPushButton("📋")
@@ -1928,10 +1920,14 @@ class BillingApp(QWidget):
         self.kupac_oib_input = QLineEdit()
         self.kupac_oib_input.setPlaceholderText("OIB kupca (opcionalno)")
         self.kupac_oib_input.setMaxLength(11)
+        self.kupac_oib_input.textChanged.connect(
+            self._kupac_rucno_promijenjen)
         kupac_layout.addRow("OIB:", self.kupac_oib_input)
 
         self.kupac_adresa_input = QLineEdit()
         self.kupac_adresa_input.setPlaceholderText("Ulica i broj, Grad")
+        self.kupac_adresa_input.textChanged.connect(
+            self._kupac_rucno_promijenjen)
         kupac_layout.addRow("Adresa:", self.kupac_adresa_input)
 
         self.pravna_osoba_check = QCheckBox("Pravna osoba — bez fiskalizacije")
@@ -1954,6 +1950,8 @@ class BillingApp(QWidget):
         racun_layout = QFormLayout()
         racun_layout.setSpacing(7)
         racun_layout.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        racun_layout.setFieldGrowthPolicy(
+            QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
 
         # Datum + Rok u jednom redu
         datum_rok_widget = QWidget()
@@ -2023,7 +2021,11 @@ class BillingApp(QWidget):
             "Čl. 90. st. 2 — usluge/roba, HR kupac, prodavatelj EU rezident",
             "Čl. 17. st. 1 — inozemni klijent (reverse charge)",
         ])
-        self.pdv_oslobodenje_combo.setFixedWidth(380)
+        self.pdv_oslobodenje_combo.setMinimumWidth(500)
+        self.pdv_oslobodenje_combo.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToContents)
+        self.pdv_oslobodenje_combo.currentTextChanged.connect(
+            self.pdv_oslobodenje_combo.setToolTip)
         self.pdv_oslobodenje_combo.setToolTip(
             "Osnova oslobođenja od PDV-a koja će biti ispisana na računu")
 
@@ -2060,7 +2062,9 @@ class BillingApp(QWidget):
         napomena_layout = QVBoxLayout()
         napomena_layout.setContentsMargins(6, 6, 6, 6)
         self.napomena_input = QTextEdit()
-        self.napomena_input.setMaximumHeight(65)
+        self.napomena_input.setMinimumHeight(80)
+        self.napomena_input.setMaximumHeight(120)
+        self.napomena_input.setAcceptRichText(False)
         self.napomena_input.setPlaceholderText(
             "Slobodan tekst na računu (opcionalno)")
         napomena_layout.addWidget(self.napomena_input)
@@ -2141,21 +2145,22 @@ class BillingApp(QWidget):
 
     def _fix_kalendar_strelice(self, cal):
         from PySide6.QtWidgets import QToolButton
+        arrow_color = self.theme_manager.colors["text"]
         for btn in cal.findChildren(QToolButton):
             name = btn.objectName()
             if name in ("qt_calendar_prevmonth", "qt_calendar_nextmonth"):
                 btn.setText("‹" if name == "qt_calendar_prevmonth" else "›")
-                # Postavi paletu direktno — zaobilazi stylesheet kaskadu
                 palette = btn.palette()
-                palette.setColor(QPalette.ColorRole.ButtonText, QColor("#ffffff"))
+                palette.setColor(QPalette.ColorRole.ButtonText,
+                                 QColor(arrow_color))
                 palette.setColor(QPalette.ColorRole.Button, QColor("transparent"))
                 btn.setPalette(palette)
                 btn.setAutoFillBackground(False)
                 btn.setStyleSheet(
-                    "QToolButton { color: #ffffff !important;"
+                    f"QToolButton {{ color: {arrow_color} !important;"
                     " background: transparent !important;"
                     " border: none; font-size: 20px; font-weight: bold; padding: 0 8px; }"
-                    "QToolButton:hover { background: rgba(255,255,255,0.2) !important;"
+                    f"QToolButton:hover {{ background: {self.theme_manager.colors['accent']} !important;"
                     " border-radius: 4px; }"
                 )
                 btn.update()
@@ -2476,11 +2481,20 @@ class BillingApp(QWidget):
 
     def popuni_kupca(self, podaci):
         """Popunjava polja kupca s odabranim podacima."""
-        self.kupac_naziv_input.setText(podaci.get('naziv', ''))
-        self.kupac_oib_input.setText(podaci.get('oib', ''))
-        self.kupac_adresa_input.setText(podaci.get('adresa', ''))
-        self.pravna_osoba_check.setChecked(
-            podaci.get('pravna_osoba', False))
+        self._popunjavanje_kupca = True
+        try:
+            self._odabrani_kupac_id = podaci.get('id')
+            self.kupac_naziv_input.setText(podaci.get('naziv', ''))
+            self.kupac_oib_input.setText(podaci.get('oib', ''))
+            self.kupac_adresa_input.setText(podaci.get('adresa', ''))
+            self.pravna_osoba_check.setChecked(
+                podaci.get('pravna_osoba', False))
+        finally:
+            self._popunjavanje_kupca = False
+
+    def _kupac_rucno_promijenjen(self):
+        if not self._popunjavanje_kupca:
+            self._odabrani_kupac_id = None
 
     def _on_datum_changed(self, date):
         """Kad se promijeni datum računa i plaćanje je transakcijsko → rok +15 dana."""
@@ -2569,7 +2583,7 @@ class BillingApp(QWidget):
         invoice_id = cursor.lastrowid
 
         # Nakon conn.commit() za invoice_id — spremi/ažuriraj kupca
-        if kupac_naziv:
+        if kupac_naziv and self._odabrani_kupac_id is None:
             spremi_kupca(
                 naziv=kupac_naziv,
                 oib=kupac_oib,
@@ -3094,11 +3108,6 @@ if __name__ == "__main__":
     os.environ["QT_SCALE_FACTOR"] = "1"
 
     app = QApplication(sys.argv)
-    from PySide6.QtGui import QPalette, QColor
-    tooltip_palette = app.palette()
-    tooltip_palette.setColor(QPalette.ColorRole.ToolTipBase, QColor("#ffffff"))
-    tooltip_palette.setColor(QPalette.ColorRole.ToolTipText, QColor("#2c2c2c"))
-    app.setPalette(tooltip_palette)
 
     window = BillingApp()
     window.show()

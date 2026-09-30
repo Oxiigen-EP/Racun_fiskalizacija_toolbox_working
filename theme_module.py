@@ -6,8 +6,9 @@ Rješenje: ThemeManager drži COLORS rječnik i emitira signal theme_changed
 kojeg slušaju moduli za ažuriranje svojih widgeta.
 """
 
-from PySide6.QtWidgets import QPushButton, QApplication
+from PySide6.QtWidgets import QPushButton, QApplication, QToolTip
 from PySide6.QtCore import QSettings, QObject, Signal
+from PySide6.QtGui import QPalette, QColor
 
 
 # ── Palete boja ─────────────────────────────────────────────────────────────
@@ -218,8 +219,8 @@ def _build_stylesheet(c: dict, checkmark_path: str) -> str:
         QListView::item:hover {{ background-color: {c['table_selected']}; color: {c['text']}; }}
         QListView::item:selected {{ background-color: {c['accent']}; color: {c['accent_text']}; }}
         QToolTip {{
-            background-color: {c['bg_widget']}; color: {c['text']};
-            border: 1px solid {c['border']}; border-radius: 4px;
+            background-color: {DARK_COLORS['bg_widget']}; color: {DARK_COLORS['text']};
+            border: 1px solid {DARK_COLORS['border']}; border-radius: 4px;
             padding: 5px 8px; font-size: 11px;
         }}
         QCalendarWidget {{
@@ -355,6 +356,20 @@ class ThemeManager(QObject):
         app = QApplication.instance()
         if app:
             app.setStyleSheet(ss)
+            tooltip_palette = QPalette()
+            tooltip_colors = DARK_COLORS
+            for group in (
+                    QPalette.ColorGroup.Active,
+                    QPalette.ColorGroup.Inactive,
+                    QPalette.ColorGroup.Disabled):
+                tooltip_palette.setColor(
+                    group, QPalette.ColorRole.ToolTipBase,
+                    QColor(tooltip_colors["bg_widget"]))
+                tooltip_palette.setColor(
+                    group, QPalette.ColorRole.ToolTipText,
+                    QColor(tooltip_colors["text"]))
+            QToolTip.setPalette(tooltip_palette)
+            QToolTip.hideText()
 
         self.theme_changed.emit(c)
         self._update_btn_label()

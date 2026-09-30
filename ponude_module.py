@@ -5,6 +5,7 @@ Ponuda sadrži iste podatke kao račun (kupac, stavke, iznos, IBAN)
 ali nema fiskalizacije. Može se pretvoriti u račun jednim klikom.
 """
 import os
+import sys
 import tempfile
 from datetime import datetime
 
@@ -13,7 +14,7 @@ from PySide6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QGroupBox, QFormLayout,
     QLineEdit, QCheckBox, QTextEdit, QComboBox, QMessageBox,
     QDateEdit, QDialog, QDialogButtonBox, QFrame, QScrollArea,
-    QSizePolicy
+    QSizePolicy, QHeaderView
 )
 from PySide6.QtCore import Qt, QDate, Signal
 from PySide6.QtGui import QFont, QColor
@@ -436,7 +437,7 @@ class NovaPonudaDialog(QDialog):
 
         self.setWindowTitle(
             "Uredi ponudu" if self._edit_id else "Nova ponuda")
-        self.setMinimumSize(780, 620)
+        self.setMinimumSize(1100, 700)
         self.setWindowModality(Qt.WindowModality.ApplicationModal)
 
         layout = QVBoxLayout(self)
@@ -457,11 +458,23 @@ class NovaPonudaDialog(QDialog):
         kupac_group = QGroupBox("Kupac")
         kl = QFormLayout()
         kl.setSpacing(5)
+        kl.setFieldGrowthPolicy(
+            QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
         self.naziv_input   = QLineEdit(ponuda_data.get('naziv_kupca', '') if ponuda_data else '')
         self.oib_input     = QLineEdit(ponuda_data.get('oib_kupca', '')   if ponuda_data else '')
         self.adresa_input  = QLineEdit(ponuda_data.get('adresa_kupca', '') if ponuda_data else '')
         self.oib_input.setMaxLength(11)
-        kl.addRow("Naziv *:", self.naziv_input)
+        naziv_row = QWidget()
+        naziv_layout = QHBoxLayout(naziv_row)
+        naziv_layout.setContentsMargins(0, 0, 0, 0)
+        naziv_layout.setSpacing(6)
+        naziv_layout.addWidget(self.naziv_input)
+        odaberi_kupca_btn = QPushButton("📋")
+        odaberi_kupca_btn.setFixedWidth(36)
+        odaberi_kupca_btn.setToolTip("Odaberi kupca iz imenika")
+        odaberi_kupca_btn.clicked.connect(self._otvori_odabir_kupca)
+        naziv_layout.addWidget(odaberi_kupca_btn)
+        kl.addRow("Naziv *:", naziv_row)
         kl.addRow("OIB:",     self.oib_input)
         kl.addRow("Adresa:",  self.adresa_input)
         kupac_group.setLayout(kl)
@@ -471,6 +484,8 @@ class NovaPonudaDialog(QDialog):
         det_group = QGroupBox("Detalji ponude")
         dl = QFormLayout()
         dl.setSpacing(5)
+        dl.setFieldGrowthPolicy(
+            QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
 
         self.datum_input = QDateEdit()
         self.datum_input.setCalendarPopup(True)
@@ -521,19 +536,34 @@ class NovaPonudaDialog(QDialog):
         self.stavke_tabla.setColumnCount(6)
         self.stavke_tabla.setHorizontalHeaderLabels(
             ["Naziv", "Kol.", "Jed.", "Cijena (EUR)", "PDV %", "Ukupno"])
-        self.stavke_tabla.setColumnWidth(0, 240)
-        self.stavke_tabla.setColumnWidth(1, 60)
-        self.stavke_tabla.setColumnWidth(2, 55)
-        self.stavke_tabla.setColumnWidth(3, 100)
-        self.stavke_tabla.setColumnWidth(4, 65)
-        self.stavke_tabla.setColumnWidth(5, 90)
-        self.stavke_tabla.horizontalHeader().setStretchLastSection(True)
+        self.stavke_tabla.setMinimumHeight(190)
+        self.stavke_tabla.verticalHeader().setDefaultSectionSize(36)
+        self.stavke_tabla.horizontalHeader().setMinimumSectionSize(60)
+        self.stavke_tabla.horizontalHeader().setSectionResizeMode(
+            0, QHeaderView.ResizeMode.Stretch)
+        self.stavke_tabla.setColumnWidth(1, 75)
+        self.stavke_tabla.setColumnWidth(2, 70)
+        self.stavke_tabla.setColumnWidth(3, 115)
+        self.stavke_tabla.setColumnWidth(4, 75)
+        self.stavke_tabla.setColumnWidth(5, 105)
+        self.stavke_tabla.horizontalHeader().setSectionResizeMode(
+            1, QHeaderView.ResizeMode.Fixed)
+        self.stavke_tabla.horizontalHeader().setSectionResizeMode(
+            2, QHeaderView.ResizeMode.Fixed)
+        self.stavke_tabla.horizontalHeader().setSectionResizeMode(
+            3, QHeaderView.ResizeMode.Fixed)
+        self.stavke_tabla.horizontalHeader().setSectionResizeMode(
+            4, QHeaderView.ResizeMode.Fixed)
+        self.stavke_tabla.horizontalHeader().setSectionResizeMode(
+            5, QHeaderView.ResizeMode.Fixed)
         sl.addWidget(self.stavke_tabla)
 
         stavke_btn_row = QHBoxLayout()
         dodaj_btn = QPushButton("➕ Dodaj stavku")
+        dodaj_btn.setObjectName("addItemBtn")
         dodaj_btn.clicked.connect(self._dodaj_stavku_red)
         ukloni_btn = QPushButton("🗑️ Ukloni stavku")
+        ukloni_btn.setObjectName("removeItemBtn")
         ukloni_btn.clicked.connect(self._ukloni_stavku)
         stavke_btn_row.addWidget(dodaj_btn)
         stavke_btn_row.addWidget(ukloni_btn)
@@ -582,6 +612,34 @@ class NovaPonudaDialog(QDialog):
 
         self._rezultat = None  # ponuda_id nakon snimanja
 
+    def _otvori_odabir_kupca(self):
+        """Otvara postojeći imenik kupaca iz glavne aplikacije."""
+        billing_app = self.parent().window() if self.parent() else None
+        if billing_app is None:
+            QMessageBox.warning(
+                self, "Odabir kupca",
+                "Nije moguće pronaći glavni prozor aplikacije.")
+            return
+
+        module = sys.modules.get(billing_app.__class__.__module__)
+        dialog_class = getattr(module, "OdabirKupcaDialog", None) \
+            if module else None
+        if dialog_class is None:
+            QMessageBox.warning(
+                self, "Odabir kupca",
+                "Dijalog za odabir kupca nije dostupan.")
+            return
+
+        self._kupac_dialog = dialog_class(self)
+        self._kupac_dialog.kupac_odabran.connect(self._popuni_kupca)
+        self._kupac_dialog.show_above_parent()
+
+    def _popuni_kupca(self, podaci):
+        """Popunjava podatke ponude odabranim kupcem."""
+        self.naziv_input.setText(podaci.get("naziv", ""))
+        self.oib_input.setText(podaci.get("oib", ""))
+        self.adresa_input.setText(podaci.get("adresa", ""))
+
     def _dodaj_stavku_red(self, s=None):
         row = self.stavke_tabla.rowCount()
         self.stavke_tabla.insertRow(row)
@@ -598,7 +656,6 @@ class NovaPonudaDialog(QDialog):
         ukupno = s['ukupno'] if s else 0.0
         item = QTableWidgetItem(f"{ukupno:.2f}")
         item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-        item.setBackground(QColor("#f0f2f5"))
         self.stavke_tabla.setItem(row, 5, item)
         self.stavke_tabla.cellChanged.connect(self._osvjezi_ukupno)
 
@@ -773,9 +830,6 @@ class PonudeWidget(QWidget):
         top_row.addStretch()
 
         nova_btn = QPushButton("➕  Nova ponuda")
-        nova_btn.setStyleSheet(
-            "background-color: #4a90d9; color: white; font-weight: bold;"
-            "padding: 6px 14px; border-radius: 5px;")
         nova_btn.clicked.connect(self.otvori_novu_ponudu)
         top_row.addWidget(nova_btn)
 
@@ -835,7 +889,7 @@ class PonudeWidget(QWidget):
 
         self.otkazi_btn = QPushButton("❌  Otkaži")
         self.otkazi_btn.setEnabled(False)
-        self.otkazi_btn.setStyleSheet("color: #c0392b;")
+        self.otkazi_btn.setObjectName("dangerBtn")
         self.otkazi_btn.clicked.connect(self._otkazi_ponudu)
         btn_row.addWidget(self.otkazi_btn)
 
@@ -843,9 +897,7 @@ class PonudeWidget(QWidget):
 
         self.pretvori_btn = QPushButton("🧾  Pretvori u račun")
         self.pretvori_btn.setEnabled(False)
-        self.pretvori_btn.setStyleSheet(
-            "background-color: #27ae60; color: white; font-weight: bold;"
-            "padding: 6px 14px; border-radius: 5px;")
+        self.pretvori_btn.setObjectName("saveBtn")
         self.pretvori_btn.clicked.connect(self._pretvori_u_racun)
         btn_row.addWidget(self.pretvori_btn)
 
