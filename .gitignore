@@ -1,0 +1,21 @@
+# Tajne i certifikati
+cert/*.p12
+cert/*.pfx
+cert/*.pem
+cert/konvertiraj_cert*.py
+config.json
+# Podaci poslovanja
+*.db
+*.db-journal
+invoice_*.pdf
+racun_*.pdf
+ponuda_*.pdf
+KPR_*.pdf
+KPR_*.xlsx
+~$*
+files.zip
+# Sigurnosne kopije i alati
+_backup/
+__pycache__/
+*.pyc
+.idea/

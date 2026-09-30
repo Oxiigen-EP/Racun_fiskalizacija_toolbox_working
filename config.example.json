@@ -1,0 +1,13 @@
+{
+  "oib": "",
+  "naziv_tvrtke": "Remi vl. Emir Pretnar",
+  "adresa": "Jezerski put 8, 42240 Ivanec",
+  "iban": "",
+  "oznaka_pp": "PP1",
+  "oznaka_nu": "1",
+  "cert_path": "E:\\Projekti\\RacunFiskalizacijaToolbox_working\\Fiskalizacija PREPROD\\cert\\certificate.pem",
+  "key_path": "E:\\Projekti\\RacunFiskalizacijaToolbox_working\\Fiskalizacija PREPROD\\cert\\privatni_kljuc.pem",
+  "key_password": "",
+  "demo_mode": true,
+  "operater": "Emir Pretnar"
+}
