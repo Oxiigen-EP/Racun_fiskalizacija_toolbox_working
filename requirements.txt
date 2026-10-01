@@ -5,3 +5,4 @@ cryptography
 requests
 qrcode[pil]
 pytest
+keyring
