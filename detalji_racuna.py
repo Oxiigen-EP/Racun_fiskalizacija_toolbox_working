@@ -127,7 +127,7 @@ INTEGRACIJA U GLAVNU DATOTEKU:
            self.stavke_widget.tabla.item(row, 1).setText(str(s['kolicina']))
            self.stavke_widget.tabla.item(row, 2).setText(s['jedinica'])
            self.stavke_widget.tabla.item(row, 3).setText(
-               f"{s['cijena']:.2f}")
+               f"{fmt_iznos(s['cijena'])}")
            combo = self.stavke_widget.tabla.cellWidget(row, 4)
            if combo:
                combo.setCurrentText(str(int(s['pdv_stopa'])))
@@ -145,6 +145,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QFont
+from format_util import fmt_iznos, parse_iznos
 
 
 def _tc():
@@ -202,7 +203,7 @@ class DetaljiRacunaDialog(QDialog):
 
         if self._racun:
             iznos = self._racun[14] or 0.0
-            iznos_lbl = QLabel(f"{iznos:,.2f} EUR")
+            iznos_lbl = QLabel(f"{fmt_iznos(iznos)} EUR")
             iznos_lbl.setStyleSheet(
                 f"color: {'#ff9e9e' if iznos < 0 else '#69f0ae'}; font-size: 18px; "
                 "font-weight: bold; background-color: transparent;")
@@ -304,6 +305,17 @@ class DetaljiRacunaDialog(QDialog):
         except Exception as e:
             print(f"⚠️  Detalji - greška dohvata računa: {e}")
             return None
+
+    def _naplata_tekst(self) -> str:
+        try:
+            r = self._cursor.execute(
+                "SELECT placeno, datum_naplate FROM invoices WHERE id=?",
+                (self.invoice_id,)).fetchone()
+        except Exception:
+            return ""
+        if not r:
+            return ""
+        return f"Naplaćeno {r[1] or ''}".strip() if r[0] else "Čeka naplatu"
 
     def _dohvati_stavke(self):
         try:
@@ -624,6 +636,7 @@ class DetaljiRacunaDialog(QDialog):
             ("Datum",          datum or ""),
             ("Rok plaćanja",   rok_placanja or ""),
             ("Način plaćanja", nacin_txt),
+            ("Naplata",        self._naplata_tekst()),
             ("PDV",            "U sustavu PDV-a" if u_pdv else "Nije obveznik PDV-a"),
             ("PP / NU",        f"{pp or ''} / {nu or ''}"),
             ("Operater",       operater or ""),
@@ -700,12 +713,12 @@ class DetaljiRacunaDialog(QDialog):
 
             is_neg = cijena < 0
             si(0, naziv or "")
-            si(1, f"{kolicina:.2f}", right=True)
+            si(1, f"{fmt_iznos(kolicina)}", right=True)
             si(2, jedinica or "kom")
-            si(3, f"{cijena:.2f}", right=True, red=is_neg)
+            si(3, f"{fmt_iznos(cijena)}", right=True, red=is_neg)
             si(4, f"{pdv_stopa:.0f}%" if u_pdv else "-", right=True)
-            si(5, f"{osnova:.2f}" if u_pdv else "-", right=True, red=is_neg)
-            si(6, f"{ukupno_s:.2f}", right=True, bold=True, red=is_neg)
+            si(5, f"{fmt_iznos(osnova)}" if u_pdv else "-", right=True, red=is_neg)
+            si(6, f"{fmt_iznos(ukupno_s)}", right=True, bold=True, red=is_neg)
 
         # Redak zbroja
         if self._stavke:
@@ -748,8 +761,8 @@ class DetaljiRacunaDialog(QDialog):
             tbl.item(row, 0).setText("UKUPNO")
             tbl.item(row, 0).setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
             if u_pdv:
-                si_uk(5, f"{uk_osnova:.2f}")
-            si_uk(6, f"{uk_ukupno:.2f} EUR")
+                si_uk(5, f"{fmt_iznos(uk_osnova)}")
+            si_uk(6, f"{fmt_iznos(uk_ukupno)} EUR")
 
         sg_layout.addWidget(tbl)
         layout.addWidget(stavke_group)
@@ -770,8 +783,8 @@ class DetaljiRacunaDialog(QDialog):
                 pdv_grupe[k][2] += ukupno_s
 
             pdv_redci = [
-                (f"{stopa:.0f}%", f"{osn:.2f} EUR",
-                 f"{pdv_i:.2f} EUR", f"{uk:.2f} EUR")
+                (f"{stopa:.0f}%", f"{fmt_iznos(osn)} EUR",
+                 f"{fmt_iznos(pdv_i)} EUR", f"{fmt_iznos(uk)} EUR")
                 for stopa, (osn, pdv_i, uk) in sorted(pdv_grupe.items())
             ]
             layout.addWidget(self._info_group(
@@ -793,7 +806,7 @@ class DetaljiRacunaDialog(QDialog):
         uk_hl.addWidget(uk_lbl)
         uk_hl.addStretch()
 
-        uk_iznos = QLabel(f"{ukupan_iznos:,.2f} EUR")
+        uk_iznos = QLabel(f"{fmt_iznos(ukupan_iznos)} EUR")
         uk_iznos.setStyleSheet(
             "color: #ff9e9e; font-size: 22px; font-weight: bold;"
             "background-color: transparent;"

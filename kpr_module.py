@@ -35,6 +35,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QFont
+from format_util import fmt_iznos, parse_iznos
 
 
 def _tc():
@@ -183,8 +184,77 @@ def _dodaj_u_kpr(conn, cursor, invoice_id: int, nacin_kod: str,
         ))
         conn.commit()
         print(f"✅ KPR: unos {redni}/{godina} za račun {broj_racuna_str}")
+        return True
     except Exception as e:
         print(f"⚠️  KPR greška pri unosu: {e}")
+        return False
+
+
+# ── Naplata računa ───────────────────────────────────────────────────────────
+# KPR (i PO-SD) se temelji na NAPLAĆENIM primicima. Gotovina, kartica i "ostalo"
+# smatraju se naplaćenima pri izdavanju; transakcijski račun (T) ulazi u KPR tek
+# kad se označi da je uplata legla, s datumom naplate.
+
+NACINI_ODMAH_NAPLACENO = ('G', 'K', 'O')
+
+
+def migriraj_naplatu(conn, cursor):
+    """Dodaje invoices.placeno i invoices.datum_naplate. Računi koji već imaju
+    KPR unos (stari način rada) označavaju se kao naplaćeni tim datumom."""
+    dodano = False
+    for sql in ("ALTER TABLE invoices ADD COLUMN placeno INTEGER DEFAULT 0",
+                "ALTER TABLE invoices ADD COLUMN datum_naplate TEXT"):
+        try:
+            cursor.execute(sql)
+            dodano = True
+        except sqlite3.OperationalError:
+            pass
+    conn.commit()
+    if dodano:
+        cursor.execute("""
+            UPDATE invoices
+            SET placeno = 1,
+                datum_naplate = (SELECT k.datum FROM kpr k
+                                 WHERE k.invoice_id = invoices.id
+                                 ORDER BY k.id LIMIT 1)
+            WHERE EXISTS (SELECT 1 FROM kpr k WHERE k.invoice_id = invoices.id)
+        """)
+        conn.commit()
+
+
+def oznaci_naplaceno(conn, cursor, invoice_id: int, datum_naplate: str):
+    """Označava račun naplaćenim i upisuje ga u KPR s datumom naplate
+    (dd.MM.yyyy). Vraća (uspjeh, poruka_greške)."""
+    r = cursor.execute(
+        "SELECT broj_racuna, nacin_placanja, ukupan_iznos, placeno "
+        "FROM invoices WHERE id=?", (invoice_id,)).fetchone()
+    if not r:
+        return False, "Račun nije pronađen."
+    broj, nacin, iznos, placeno = r
+    if placeno:
+        return False, "Račun je već označen kao naplaćen."
+    cursor.execute(
+        "UPDATE invoices SET placeno=1, datum_naplate=? WHERE id=?",
+        (datum_naplate, invoice_id))
+    conn.commit()
+    if not _dodaj_u_kpr(conn, cursor, invoice_id, nacin or 'G', datum_naplate,
+                        broj or str(invoice_id), iznos or 0.0):
+        cursor.execute(
+            "UPDATE invoices SET placeno=0, datum_naplate=NULL WHERE id=?",
+            (invoice_id,))
+        conn.commit()
+        return False, "Upis u KPR nije uspio, naplata nije spremljena."
+    return True, ""
+
+
+def ponisti_naplatu(conn, cursor, invoice_id: int):
+    """Poništava naplatu: briše KPR unos računa i vraća račun u 'čeka naplatu'.
+    Redni brojevi KPR-a se ne renumeriraju."""
+    cursor.execute("DELETE FROM kpr WHERE invoice_id=?", (invoice_id,))
+    cursor.execute(
+        "UPDATE invoices SET placeno=0, datum_naplate=NULL WHERE id=?",
+        (invoice_id,))
+    conn.commit()
 
 
 # ── Dijalog za ručni unos / ispravak ────────────────────────────────────────
@@ -250,8 +320,8 @@ class KPRUnos(QDialog):
             QMessageBox.warning(self, "Greška", "Format datuma mora biti dd.MM.yyyy!")
             return
         try:
-            float(self.gotovina_input.text().replace(',', '.') or '0')
-            float(self.virmanski_input.text().replace(',', '.') or '0')
+            parse_iznos(self.gotovina_input.text() or '0')
+            parse_iznos(self.virmanski_input.text() or '0')
         except ValueError:
             QMessageBox.warning(self, "Greška", "Iznosi moraju biti brojevi!")
             return
@@ -262,8 +332,8 @@ class KPRUnos(QDialog):
             'datum': self.datum_input.text().strip(),
             'broj_temeljnice': self.temeljnica_input.text().strip(),
             'opis': self.opis_input.text().strip(),
-            'gotovina': round(float(self.gotovina_input.text().replace(',', '.') or '0'), 2),
-            'virmanski': round(float(self.virmanski_input.text().replace(',', '.') or '0'), 2),
+            'gotovina': round(parse_iznos(self.gotovina_input.text() or '0'), 2),
+            'virmanski': round(parse_iznos(self.virmanski_input.text() or '0'), 2),
         }
 
 
@@ -510,9 +580,9 @@ class KPRWidget(QWidget):
             si(1, datum)
             si(2, temeljnica or "")
             si(3, opis or "")
-            si(4, f"{gotovina:.2f}" if gotovina else "-", right=True)
-            si(5, f"{virmanski:.2f}" if virmanski else "-", right=True)
-            si(6, f"{ukupno:.2f}", right=True, bold=True)
+            si(4, f"{fmt_iznos(gotovina)}" if gotovina else "-", right=True)
+            si(5, f"{fmt_iznos(virmanski)}" if virmanski else "-", right=True)
+            si(6, f"{fmt_iznos(ukupno)}", right=True, bold=True)
             vrsta = "✏️ ručno" if rucno else "🔄 auto"
             si(7, vrsta)
 
@@ -540,9 +610,9 @@ class KPRWidget(QWidget):
             si_uk(1, "UKUPNO", right=False)
             si_uk(2, "")
             si_uk(3, "")
-            si_uk(4, f"{uk_got:.2f} EUR")
-            si_uk(5, f"{uk_vir:.2f} EUR")
-            si_uk(6, f"{uk_ukupno:.2f} EUR")
+            si_uk(4, f"{fmt_iznos(uk_got)} EUR")
+            si_uk(5, f"{fmt_iznos(uk_vir)} EUR")
+            si_uk(6, f"{fmt_iznos(uk_ukupno)} EUR")
             si_uk(7, "")
 
         n = len(rows)
@@ -550,8 +620,8 @@ class KPRWidget(QWidget):
             f"{n} {'unos' if n == 1 else 'unosa'}  •  godina {self._godina}")
         uk = round(uk_got + uk_vir, 2)
         self.zbroj_label.setText(
-            f"Gotovina: {uk_got:.2f} EUR   |   Virman: {uk_vir:.2f} EUR   |   "
-            f"Ukupno: {uk:.2f} EUR")
+            f"Gotovina: {fmt_iznos(uk_got)} EUR   |   Virman: {fmt_iznos(uk_vir)} EUR   |   "
+            f"Ukupno: {fmt_iznos(uk)} EUR")
 
     def _rucni_unos(self):
         dlg = KPRUnos(self)
@@ -642,7 +712,14 @@ class KPRWidget(QWidget):
         if odg != QMessageBox.StandardButton.Yes:
             return
         try:
+            r = self._cursor.execute(
+                "SELECT invoice_id FROM kpr WHERE id=?", (db_id,)).fetchone()
             self._cursor.execute("DELETE FROM kpr WHERE id=?", (db_id,))
+            if r and r[0]:
+                self._cursor.execute(
+                    "UPDATE invoices SET placeno=0, datum_naplate=NULL "
+                    "WHERE id=? AND NOT EXISTS "
+                    "(SELECT 1 FROM kpr WHERE invoice_id=?)", (r[0], r[0]))
             self._conn.commit()
             self.osvjezi()
         except Exception as e:
@@ -914,9 +991,9 @@ class KPRWidget(QWidget):
             tc(3, opis_str)
 
             c.setFont(fn_b, 7.5)
-            tc(4, f"{gotovina:.2f}" if gotovina else "-", right=True)
-            tc(5, f"{virmanski:.2f}" if virmanski else "-", right=True)
-            tc(6, f"{ukupno:.2f}", right=True)
+            tc(4, f"{fmt_iznos(gotovina)}" if gotovina else "-", right=True)
+            tc(5, f"{fmt_iznos(virmanski)}" if virmanski else "-", right=True)
+            tc(6, f"{fmt_iznos(ukupno)}", right=True)
             c.setFont(fn, 7.5)
 
             # Linija ispod retka
@@ -982,9 +1059,9 @@ class KPRWidget(QWidget):
         c.setFillColorRGB(1, 1, 1)
         c.setFont(fn_b, 8)
         c.drawString(MARGIN + 4, y - 10, "UKUPNO")
-        c.drawRightString(col_x[4] + col_w[4] - 2, y - 10, f"{uk_got:.2f} EUR")
-        c.drawRightString(col_x[5] + col_w[5] - 2, y - 10, f"{uk_vir:.2f} EUR")
-        c.drawRightString(col_x[6] + col_w[6] - 2, y - 10, f"{uk_uk:.2f} EUR")
+        c.drawRightString(col_x[4] + col_w[4] - 2, y - 10, f"{fmt_iznos(uk_got)} EUR")
+        c.drawRightString(col_x[5] + col_w[5] - 2, y - 10, f"{fmt_iznos(uk_vir)} EUR")
+        c.drawRightString(col_x[6] + col_w[6] - 2, y - 10, f"{fmt_iznos(uk_uk)} EUR")
         c.setFillColorRGB(0, 0, 0)
 
         # Datum ispisa

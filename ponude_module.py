@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt, QDate, Signal
 from PySide6.QtGui import QFont, QColor
+from format_util import fmt_iznos, parse_iznos
 
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas as rl_canvas
@@ -307,17 +308,17 @@ def generiraj_pdf_ponude(ponuda: dict, stavke: list, config: dict,
             naziv = naziv[:33] + "..."
         c.drawString(col_x[0], y, naziv)
         c.drawString(col_x[1], y, s['jedinica'])
-        c.drawRightString(col_x[2] + 40, y, f"{s['kolicina']:.2f}")
-        c.drawRightString(col_x[3] + 50, y, f"{s['cijena']:.2f}")
+        c.drawRightString(col_x[2] + 40, y, f"{fmt_iznos(s['kolicina'])}")
+        c.drawRightString(col_x[3] + 50, y, f"{fmt_iznos(s['cijena'])}")
 
         if u_sustavu_pdv:
             c.drawRightString(col_x[4] + 40, y, f"{s['pdv_stopa']:.0f}%")
-            c.drawRightString(col_x[5] + 50, y, f"{s['ukupno_bez_pdv']:.2f}")
+            c.drawRightString(col_x[5] + 50, y, f"{fmt_iznos(s['ukupno_bez_pdv'])}")
         else:
             c.drawRightString(col_x[4] + 40, y, "-")
             c.drawRightString(col_x[5] + 50, y, "-")
 
-        c.drawRightString(col_x[6], y, f"{s['ukupno']:.2f}")
+        c.drawRightString(col_x[6], y, f"{fmt_iznos(s['ukupno'])}")
         y -= 16
 
         if y < 180:
@@ -346,9 +347,9 @@ def generiraj_pdf_ponude(ponuda: dict, stavke: list, config: dict,
         y -= 12
         for stopa, v in sorted(pdv_grupe.items()):
             text(40,  y, f"{stopa:.0f}%",        fn, 8)
-            text(120, y, f"{v['osnov']:.2f} EUR", fn, 8)
-            text(220, y, f"{v['pdv']:.2f} EUR",   fn, 8)
-            text(320, y, f"{v['ukupno']:.2f} EUR",fn, 8)
+            text(120, y, f"{fmt_iznos(v['osnov'])} EUR", fn, 8)
+            text(220, y, f"{fmt_iznos(v['pdv'])} EUR",   fn, 8)
+            text(320, y, f"{fmt_iznos(v['ukupno'])} EUR",fn, 8)
             y -= 12
         y -= 5
         line(y)
@@ -365,7 +366,7 @@ def generiraj_pdf_ponude(ponuda: dict, stavke: list, config: dict,
     c.setFillColorRGB(1, 1, 1)
     c.setFont(fn_b, 13)
     c.drawString(W - 195, y, "UKUPNO:")
-    c.drawRightString(W - 45, y, f"{ukupan_iznos:.2f} EUR")
+    c.drawRightString(W - 45, y, f"{fmt_iznos(ukupan_iznos)} EUR")
     c.setFillColorRGB(0, 0, 0)
     y -= 30
 
@@ -537,7 +538,7 @@ class NovaPonudaDialog(QDialog):
         self.stavke_tabla.setHorizontalHeaderLabels(
             ["Naziv", "Kol.", "Jed.", "Cijena (EUR)", "PDV %", "Ukupno"])
         self.stavke_tabla.setMinimumHeight(190)
-        self.stavke_tabla.verticalHeader().setDefaultSectionSize(36)
+        self.stavke_tabla.verticalHeader().setDefaultSectionSize(46)
         self.stavke_tabla.horizontalHeader().setMinimumSectionSize(60)
         self.stavke_tabla.horizontalHeader().setSectionResizeMode(
             0, QHeaderView.ResizeMode.Stretch)
@@ -654,7 +655,7 @@ class NovaPonudaDialog(QDialog):
         self.stavke_tabla.setItem(row, 4, QTableWidgetItem(
             str(s['pdv_stopa']) if s else '0'))
         ukupno = s['ukupno'] if s else 0.0
-        item = QTableWidgetItem(f"{ukupno:.2f}")
+        item = QTableWidgetItem(f"{fmt_iznos(ukupno)}")
         item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
         self.stavke_tabla.setItem(row, 5, item)
         self.stavke_tabla.cellChanged.connect(self._osvjezi_ukupno)
@@ -668,12 +669,12 @@ class NovaPonudaDialog(QDialog):
         if col not in (1, 3, 4):
             return
         try:
-            kol    = float(self.stavke_tabla.item(row, 1).text() or 0)
-            cijena = float(self.stavke_tabla.item(row, 3).text() or 0)
-            pdv    = float(self.stavke_tabla.item(row, 4).text() or 0)
+            kol    = parse_iznos(self.stavke_tabla.item(row, 1).text() or 0)
+            cijena = parse_iznos(self.stavke_tabla.item(row, 3).text() or 0)
+            pdv    = parse_iznos(self.stavke_tabla.item(row, 4).text() or 0)
             ukupno = round(kol * cijena * (1 + pdv / 100), 2)
             self.stavke_tabla.blockSignals(True)
-            self.stavke_tabla.item(row, 5).setText(f"{ukupno:.2f}")
+            self.stavke_tabla.item(row, 5).setText(f"{fmt_iznos(ukupno)}")
             self.stavke_tabla.blockSignals(False)
         except Exception:
             pass
@@ -688,9 +689,9 @@ class NovaPonudaDialog(QDialog):
             if not naziv:
                 continue
             try:
-                kolicina = float(cell(1) or 1)
-                cijena   = float(cell(3) or 0)
-                pdv      = float(cell(4) or 0)
+                kolicina = parse_iznos(cell(1) or 1)
+                cijena   = parse_iznos(cell(3) or 0)
+                pdv      = parse_iznos(cell(4) or 0)
             except ValueError:
                 kolicina, cijena, pdv = 1.0, 0.0, 0.0
             osnov    = round(kolicina * cijena, 2)
@@ -982,7 +983,7 @@ class PonudeWidget(QWidget):
             self.tabla.setItem(r, 2, ci(rok or ''))
             self.tabla.setItem(r, 3, ci(kupac or ''))
             self.tabla.setItem(r, 4, ci(
-                f"{iznos:.2f}" if iznos else '0.00',
+                f"{fmt_iznos(iznos)}" if iznos else '0,00',
                 Qt.AlignmentFlag.AlignRight))
 
             st_tekst = STATUS_EMOJI.get(status or STATUS_DRAFT, status or '')
