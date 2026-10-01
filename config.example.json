@@ -9,5 +9,6 @@
   "key_path": "E:\\Projekti\\RacunFiskalizacijaToolbox_working\\Fiskalizacija PREPROD\\cert\\privatni_kljuc.pem",
   "key_password": "",
   "demo_mode": true,
-  "operater": "Emir Pretnar"
+  "operater": "Emir Pretnar",
+  "backup_mapa": ""
 }

@@ -16,6 +16,8 @@ from PySide6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout,
 from PySide6.QtCore import Qt, QDate, Signal
 from PySide6.QtGui import QFont, QColor, QPalette
 from format_util import fmt_iznos, parse_iznos
+from novac import izracun_stavke, ukupno_stavki, pdv_grupe_iz_stavki, zbroji
+from arhiva_util import napravi_backup, spremi_poruku
 
 from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
@@ -47,6 +49,8 @@ from theme_module import ThemeManager
 
 
 CONFIG_PATH = "config.json"
+# Baza, backup i arhiva poruka su u istoj mapi kao config.json
+BASE_DIR = os.path.dirname(os.path.abspath(CONFIG_PATH))
 
 # Zakonski tekstovi oslobođenja od PDV-a (indeks = redoslijed u dropdownu)
 PDV_OSLOBODENJE_TEKSTOVI = [
@@ -68,7 +72,8 @@ def učitaj_config():
         "key_path": "",
         "key_password": "",
         "demo_mode": True,
-        "operater": ""
+        "operater": "",
+        "backup_mapa": ""      # prazno = mapa "backup" uz bazu; može biti npr. OneDrive
     }
     if os.path.exists(CONFIG_PATH):
         try:
@@ -334,6 +339,12 @@ xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
     </soap:Body>
 </soap:Envelope>'''
 
+            oznaka_arhive = (f"{racun_data['broj_racuna']}-"
+                             f"{racun_data['oznaka_pp']}-{racun_data['oznaka_nu']}")
+            godina_arhive = datum_vrijeme[6:10]
+            spremi_poruku(BASE_DIR, godina_arhive, oznaka_arhive, "zahtjev",
+                          soap_body)
+
             print(f"📤 Slanje na: {self.url}")
             print(f"   OIB: {racun_data['oib']}, Iznos: {racun_data['ukupan_iznos']} EUR")
             print(f"   U sustavu PDV-a: {u_sustavu_pdv}, ZKI: {zki}")
@@ -348,6 +359,8 @@ xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
                 timeout=30
             )
             print(f"   HTTP status: {response.status_code}")
+            spremi_poruku(BASE_DIR, godina_arhive, oznaka_arhive,
+                          f"odgovor_http{response.status_code}", response.content)
 
             root = etree.fromstring(response.content)
             ns = {'soap': 'http://schemas.xmlsoap.org/soap/envelope/',
@@ -380,6 +393,11 @@ xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
             print(f"❌ Iznimka: {e}")
             import traceback; traceback.print_exc()
             self.zadnja_greska = f"Slanje nije uspjelo: {e}"
+            try:
+                spremi_poruku(BASE_DIR, godina_arhive, oznaka_arhive, "greska",
+                              self.zadnja_greska, "txt")
+            except NameError:
+                pass
             return None, zki
 
 
@@ -517,6 +535,24 @@ for _sql in ("ALTER TABLE invoices ADD COLUMN vrijeme_izdavanja TEXT",
         pass
 conn.commit()
 inicijaliziraj_ponude_tablice(conn, cursor)
+
+
+def backup_baze():
+    """Snimka baze u backup mapu (config: backup_mapa). Jedna datoteka po danu,
+    prepisuje se zadnjim stanjem tog dana."""
+    mapa = ""
+    try:
+        with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
+            mapa = (json.load(f).get("backup_mapa") or "").strip()
+    except Exception:
+        pass
+    putanja = napravi_backup(conn, mapa or os.path.join(BASE_DIR, "backup"))
+    if putanja:
+        print(f"💾 Backup baze: {putanja}")
+    return putanja
+
+
+backup_baze()
 
 
 # ---------------------------------------------------------------------------
@@ -716,13 +752,13 @@ class StavkeWidget(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
 
         # Tablica
-        self.tabla = QTableWidget(0, 6)
+        self.tabla = QTableWidget(0, 7)
         self.tabla.setHorizontalHeaderLabels(
             ["Naziv", "Količina", "Jed.", "Cijena (EUR)",
-             "PDV %", "Ukupno"])
+             "Popust %", "PDV %", "Ukupno"])
         self.tabla.horizontalHeader().setSectionResizeMode(
             0, QHeaderView.ResizeMode.Stretch)
-        for i in range(1, 6):
+        for i in range(1, 7):
             self.tabla.horizontalHeader().setSectionResizeMode(
                 i, QHeaderView.ResizeMode.ResizeToContents)
         self.tabla.horizontalHeader().setMinimumSectionSize(55)
@@ -752,7 +788,7 @@ class StavkeWidget(QWidget):
         """Ažurira PDV stupac prema statusu obveznika."""
         self.u_sustavu_pdv = u_sustavu_pdv
         for row in range(self.tabla.rowCount()):
-            combo = self.tabla.cellWidget(row, 4)
+            combo = self.tabla.cellWidget(row, 5)
             if combo:
                 combo.setEnabled(u_sustavu_pdv)
                 if not u_sustavu_pdv:
@@ -771,20 +807,25 @@ class StavkeWidget(QWidget):
                                      Qt.AlignmentFlag.AlignVCenter)
         self.tabla.setItem(row, 3, cijena_item)
 
+        popust_item = QTableWidgetItem("0,00")
+        popust_item.setTextAlignment(Qt.AlignmentFlag.AlignRight |
+                                     Qt.AlignmentFlag.AlignVCenter)
+        self.tabla.setItem(row, 4, popust_item)
+
         pdv_combo = NoScrollComboBox()
         pdv_combo.addItems(self.PDV_STOPE)
         pdv_combo.setMinimumWidth(55)
         pdv_combo.setCurrentText("25" if self.u_sustavu_pdv else "0")
         pdv_combo.setEnabled(self.u_sustavu_pdv)
         pdv_combo.currentTextChanged.connect(self.azuriraj_ukupno)
-        self.tabla.setCellWidget(row, 4, pdv_combo)
+        self.tabla.setCellWidget(row, 5, pdv_combo)
 
         ukupno_item = QTableWidgetItem("0,00")
         ukupno_item.setTextAlignment(Qt.AlignmentFlag.AlignRight |
                                      Qt.AlignmentFlag.AlignVCenter)
         ukupno_item.setFlags(ukupno_item.flags() &
                              ~Qt.ItemFlag.ItemIsEditable)
-        self.tabla.setItem(row, 5, ukupno_item)
+        self.tabla.setItem(row, 6, ukupno_item)
 
         self.tabla.itemChanged.connect(self.azuriraj_ukupno)
 
@@ -794,22 +835,39 @@ class StavkeWidget(QWidget):
             self.tabla.removeRow(row)
             self.azuriraj_ukupno()
 
+    def _procitaj_red(self, row):
+        """Vraća (količina, cijena, popust %, PDV %) retka. Baca ValueError ako
+        količina ili cijena nisu brojevi. Neispravan popust se čita kao 0."""
+        def tekst(col, zadano):
+            item = self.tabla.item(row, col)
+            return item.text() if item is not None else zadano
+        kolicina = parse_iznos(tekst(1, "1"))
+        cijena = parse_iznos(tekst(3, "0"))
+        try:
+            popust = parse_iznos(tekst(4, "0") or "0")
+        except ValueError:
+            popust = 0.0
+        popust = min(max(popust, 0.0), 100.0)
+        combo = self.tabla.cellWidget(row, 5)
+        pdv_stopa = float(combo.currentText()) if combo else 0.0
+        return kolicina, cijena, popust, pdv_stopa
+
     def azuriraj_ukupno(self):
         """Ažurira ukupno po stavci."""
         self.tabla.itemChanged.disconnect(self.azuriraj_ukupno)
         try:
             for row in range(self.tabla.rowCount()):
                 try:
-                    kol = parse_iznos(
-                        (self.tabla.item(row, 1) or
-                         QTableWidgetItem("0")).text())
-                    cij = parse_iznos(
-                        (self.tabla.item(row, 3) or
-                         QTableWidgetItem("0")).text())
-                    pdv_combo = self.tabla.cellWidget(row, 4)
-                    pdv = float(pdv_combo.currentText()) if pdv_combo else 0
-                    ukupno = kol * cij * (1 + pdv / 100)
-                    item = self.tabla.item(row, 5)
+                    kol, cij, pop, pdv = self._procitaj_red(row)
+                    ukupno = izracun_stavke(kol, cij, pdv, pop)['ukupno']
+                    # cijena i popust uvijek na 2 decimale
+                    for col, vr in ((3, cij), (4, pop)):
+                        it = self.tabla.item(row, col)
+                        if it is not None and it.text().strip():
+                            novi = fmt_iznos(vr)
+                            if it.text() != novi:
+                                it.setText(novi)
+                    item = self.tabla.item(row, 6)
                     if item:
                         item.setText(f"{fmt_iznos(ukupno)}")
                 except (ValueError, AttributeError):
@@ -818,7 +876,7 @@ class StavkeWidget(QWidget):
             self.tabla.itemChanged.connect(self.azuriraj_ukupno)
 
     def get_stavke(self):
-        """Vraća listu stavki kao dict."""
+        """Vraća listu stavki kao dict (iznosi iz novac.izracun_stavke)."""
         stavke = []
         for row in range(self.tabla.rowCount()):
             naziv = (self.tabla.item(row, 0) or
@@ -826,53 +884,32 @@ class StavkeWidget(QWidget):
             if not naziv:
                 continue
             try:
-                kolicina = parse_iznos(
-                    (self.tabla.item(row, 1) or
-                     QTableWidgetItem("1")).text())
+                kolicina, cijena, popust, pdv_stopa = self._procitaj_red(row)
                 jedinica = (self.tabla.item(row, 2) or
                             QTableWidgetItem("kom")).text().strip() or "kom"
-                cijena = parse_iznos(
-                    (self.tabla.item(row, 3) or
-                     QTableWidgetItem("0")).text())
-                pdv_combo = self.tabla.cellWidget(row, 4)
-                pdv_stopa = float(
-                    pdv_combo.currentText()) if pdv_combo else 0.0
-
+                r = izracun_stavke(kolicina, cijena, pdv_stopa, popust)
                 stavke.append({
                     'naziv': naziv,
                     'kolicina': kolicina,
                     'jedinica': jedinica,
                     'cijena': cijena,
+                    'popust': popust,
+                    'popust_iznos': r['popust_iznos'],
                     'pdv_stopa': pdv_stopa,
-                    'ukupno_bez_pdv': round(kolicina * cijena, 2),
-                    'pdv_iznos': round(kolicina * cijena * pdv_stopa / 100, 2),
-                    'ukupno': round(kolicina * cijena * (1 + pdv_stopa / 100), 2)
+                    'ukupno_bez_pdv': r['osnovica'],
+                    'pdv_iznos': r['pdv_iznos'],
+                    'ukupno': r['ukupno'],
                 })
             except (ValueError, AttributeError):
                 pass
         return stavke
 
     def get_ukupan_iznos(self):
-        return sum(s['ukupno'] for s in self.get_stavke())
+        return ukupno_stavki(self.get_stavke())
 
     def get_pdv_grupe(self):
         """Grupira PDV po stopi za fiskalizaciju."""
-        grupe = {}
-        for s in self.get_stavke():
-            stopa = s['pdv_stopa']
-            if stopa not in grupe:
-                grupe[stopa] = {'osnovica': 0.0, 'iznos': 0.0}
-            grupe[stopa]['osnovica'] += s['ukupno_bez_pdv']
-            grupe[stopa]['iznos'] += s['pdv_iznos']
-
-        return [
-            {
-                'Stopa': f"{stopa:.2f}",
-                'Osnovica': f"{v['osnovica']:.2f}",
-                'Iznos': f"{v['iznos']:.2f}"
-            }
-            for stopa, v in grupe.items() if stopa > 0
-        ]
+        return pdv_grupe_iz_stavki(self.get_stavke())
 
 
 
@@ -1933,7 +1970,8 @@ class BillingApp(QWidget):
 
         # ThemeManager — primjenjuje temu na app razini, pamti odabir
         self.theme_manager = ThemeManager(self, self._checkmark_path)
-        #self.theme_manager.theme_changed.connect(self._apply_widget_styles)
+        # Lokalni stilovi (panel certifikata, pregled računa...) prate temu
+        self.theme_manager.theme_changed.connect(self._primijeni_lokalne_stilove)
 
         self.theme_manager.theme_changed.connect(self._on_tema_promijenjena)
 
@@ -1963,15 +2001,10 @@ class BillingApp(QWidget):
         status_bar.addWidget(self.cert_status_label)
         status_bar.addStretch()
 
-        okolina_badge = QLabel(
+        self.okolina_badge = QLabel(
             "  🧪 DEMO  " if self.demo_mode else "  🚀 PRODUKCIJA  ")
-        okolina_badge.setStyleSheet(
-            "background-color: #fff3cd; color: #856404; font-weight: bold;"
-            "border-radius: 10px; padding: 2px 8px; font-size: 10px;"
-            if self.demo_mode else
-            "background-color: #d4edda; color: #155724; font-weight: bold;"
-            "border-radius: 10px; padding: 2px 8px; font-size: 10px;")
-        status_bar.addWidget(okolina_badge)
+        self._stil_okoline(self.theme_manager.colors)
+        status_bar.addWidget(self.okolina_badge)
 
         self.toggle_cert_btn = QPushButton("⚙️  Postavke")
         self.toggle_cert_btn.setFixedWidth(110)
@@ -1985,7 +2018,8 @@ class BillingApp(QWidget):
         cert_outer_layout.addLayout(status_bar)
 
         self.cert_panel = QWidget()
-        self.cert_panel.setStyleSheet("background-color: #f8f9fb; border-radius: 6px;")
+        self.cert_panel.setObjectName("certPanel")
+        self._stil_cert_panela(self.theme_manager.colors)
         cert_layout = QFormLayout(self.cert_panel)
         cert_layout.setContentsMargins(8, 12, 8, 8)
         cert_layout.setSpacing(8)
@@ -2006,6 +2040,7 @@ class BillingApp(QWidget):
         cert_layout.addRow("Lozinka ključa:", self.key_password_input)
 
         self.init_cert_btn = QPushButton("🔐  Inicijaliziraj certifikat")
+        self.init_cert_btn.setObjectName("addItemBtn")
         self.init_cert_btn.clicked.connect(self.init_certifikat)
         cert_layout.addRow(self.init_cert_btn)
 
@@ -2457,6 +2492,36 @@ class BillingApp(QWidget):
         """)
     # -----------------------------------------------------------------------
 
+    def _primijeni_lokalne_stilove(self, c: dict):
+        """Slot za promjenu teme: greška u jednom stilu ne smije srušiti aplikaciju."""
+        try:
+            self._apply_widget_styles(c)
+        except Exception as e:
+            import traceback
+            print(f"⚠️  Primjena lokalnih stilova teme: {e}\n{traceback.format_exc()}")
+
+    def _stil_cert_panela(self, c: dict):
+        """Pozadina panela i polja unutar njega prate aktivnu temu. Pravila su
+        vezana uz objectName, pa ne diraju ostale widgete."""
+        self.cert_panel.setStyleSheet(
+            f"QWidget#certPanel {{ background-color: {c['bg_panel']};"
+            f" border-radius: 6px; }}"
+            f"QWidget#certPanel QLineEdit {{ background-color: {c['bg_input']};"
+            f" color: {c['text']}; border: 1px solid {c['border']}; }}"
+            f"QWidget#certPanel QLabel {{ background-color: transparent;"
+            f" color: {c['text']}; }}")
+
+    def _stil_okoline(self, c: dict):
+        """Boje oznake DEMO/PRODUKCIJA za svijetlu i tamnu temu."""
+        tamna = c.get('bg') == '#1e1e2e'
+        if self.demo_mode:
+            boje = ("#4a3a12", "#f0c164") if tamna else ("#fff3cd", "#856404")
+        else:
+            boje = ("#1c3b27", "#8fd9a8") if tamna else ("#d4edda", "#155724")
+        self.okolina_badge.setStyleSheet(
+            f"background-color: {boje[0]}; color: {boje[1]}; font-weight: bold;"
+            "border-radius: 10px; padding: 2px 8px; font-size: 10px;")
+
     def _apply_widget_styles(self, c: dict):
         """
         Ažurira sve lokalne setStyleSheet() pozive kad se tema promijeni.
@@ -2501,9 +2566,10 @@ class BillingApp(QWidget):
                     f" background-color: transparent;")
 
         # BillingApp — cert_panel, cert_status, okolina, odaberi_btn
+        if hasattr(self, 'okolina_badge'):
+            self._stil_okoline(c)
         if hasattr(self, 'cert_panel'):
-            self.cert_panel.setStyleSheet(
-                f"background-color: {c['bg_panel']}; border-radius: 6px;")
+            self._stil_cert_panela(c)
         if hasattr(self, 'cert_status_label'):
             # Čuvamo boju statusa — samo resetiramo font
             current = self.cert_status_label.styleSheet()
@@ -2744,7 +2810,7 @@ class BillingApp(QWidget):
                                 "OIB kupca mora imati 11 znamenki!")
             return
 
-        ukupan_iznos = round(sum(s['ukupno'] for s in stavke), 2)
+        ukupan_iznos = ukupno_stavki(stavke)
         pdv_grupe = self.stavke_widget.get_pdv_grupe() if u_sustavu_pdv else []
 
         now = datetime.now()
@@ -2786,10 +2852,11 @@ class BillingApp(QWidget):
             cursor.execute("""
                            INSERT INTO invoice_stavke
                            (invoice_id, naziv, kolicina, jedinica,
-                            cijena, pdv_stopa)
-                           VALUES (?, ?, ?, ?, ?, ?)
+                            cijena, pdv_stopa, popust)
+                           VALUES (?, ?, ?, ?, ?, ?, ?)
                            """, (invoice_id, s['naziv'], s['kolicina'],
-                                 s['jedinica'], s['cijena'], s['pdv_stopa']))
+                                 s['jedinica'], s['cijena'], s['pdv_stopa'],
+                                 s.get('popust', 0)))
         conn.commit()
 
         # Fiskalizacija
@@ -2915,6 +2982,8 @@ class BillingApp(QWidget):
         else:
             status += "\nNaplata: čeka uplatu (KPR se puni pri označavanju naplate)"
 
+        backup_baze()
+
         QMessageBox.information(
             self, "Račun spremljen",
             f"Račun {broj_racuna_str} spremljen!\n"
@@ -2963,23 +3032,21 @@ class BillingApp(QWidget):
                            "(račun je izdan prije ove verzije aplikacije), "
                            "pa se ne može ispravno poslati ponovno.")
 
-        pdv_grupe = []
-        if u_pdv:
-            grupe = {}
-            for naziv, kol, cijena, stopa in cursor.execute(
-                    "SELECT naziv, kolicina, cijena, pdv_stopa "
-                    "FROM invoice_stavke WHERE invoice_id=? ORDER BY id",
-                    (invoice_id,)).fetchall():
-                stopa = float(stopa or 0)
-                osn = round(kol * cijena, 2)
-                pdv = round(kol * cijena * stopa / 100, 2)
-                g = grupe.setdefault(stopa, {'osnovica': 0.0, 'iznos': 0.0})
-                g['osnovica'] += osn
-                g['iznos'] += pdv
-            pdv_grupe = [{'Stopa': f"{st:.2f}",
-                          'Osnovica': f"{v['osnovica']:.2f}",
-                          'Iznos': f"{v['iznos']:.2f}"}
-                         for st, v in grupe.items() if st > 0]
+        stavke = []
+        for kol, cijena, stopa, popust in cursor.execute(
+                "SELECT kolicina, cijena, pdv_stopa, popust "
+                "FROM invoice_stavke WHERE invoice_id=? ORDER BY id",
+                (invoice_id,)).fetchall():
+            red = izracun_stavke(kol, cijena, stopa or 0, popust or 0)
+            stavke.append({'pdv_stopa': stopa or 0,
+                           'ukupno_bez_pdv': red['osnovica'],
+                           'pdv_iznos': red['pdv_iznos'],
+                           'ukupno': red['ukupno']})
+        if abs(ukupno_stavki(stavke) - (iznos or 0)) > 0.005:
+            return False, ("Zbroj stavki ne odgovara spremljenom iznosu računa "
+                           f"({fmt_iznos(ukupno_stavki(stavke))} naspram "
+                           f"{fmt_iznos(iznos or 0)}). Račun nije poslan.")
+        pdv_grupe = pdv_grupe_iz_stavki(stavke) if u_pdv else []
 
         jir, _ = self.fiskalizacija.fiskaliziraj_racun({
             'oib': oib,
@@ -3003,6 +3070,7 @@ class BillingApp(QWidget):
                 WHERE id=?""",
                 (jir, datetime.now().isoformat(), (pokusaja or 0) + 1, invoice_id))
             conn.commit()
+            backup_baze()
             return True, jir
         greska = self.fiskalizacija.zadnja_greska or "JIR nije dobiven."
         cursor.execute(
@@ -3050,7 +3118,10 @@ class BillingApp(QWidget):
             self.stavke_widget.tabla.item(row, 2).setText(s['jedinica'])
             self.stavke_widget.tabla.item(row, 3).setText(
                 f"{fmt_iznos(s['cijena'])}")
-            combo = self.stavke_widget.tabla.cellWidget(row, 4)
+            pop_item = self.stavke_widget.tabla.item(row, 4)
+            if pop_item is not None:
+                pop_item.setText(fmt_iznos(s.get('popust') or 0))
+            combo = self.stavke_widget.tabla.cellWidget(row, 5)
             if combo:
                 combo.setCurrentText(str(int(s['pdv_stopa'])))
         self.stavke_widget.azuriraj_ukupno()
@@ -3082,7 +3153,10 @@ class BillingApp(QWidget):
             self.stavke_widget.tabla.item(row, 1).setText(str(s['kolicina']))
             self.stavke_widget.tabla.item(row, 2).setText(s['jedinica'])
             self.stavke_widget.tabla.item(row, 3).setText(f"{fmt_iznos(s['cijena'])}")
-            combo = self.stavke_widget.tabla.cellWidget(row, 4)
+            pop_item = self.stavke_widget.tabla.item(row, 4)
+            if pop_item is not None:
+                pop_item.setText(fmt_iznos(s.get('popust') or 0))
+            combo = self.stavke_widget.tabla.cellWidget(row, 5)
             if combo:
                 combo.setCurrentText(str(int(s['pdv_stopa'])))
         self.stavke_widget.azuriraj_ukupno()
@@ -3238,6 +3312,14 @@ class BillingApp(QWidget):
                 c.drawRightString(col_x[5] + 50, y, "-")
 
             c.drawRightString(col_x[6], y, f"{fmt_iznos(s['ukupno'])}")
+            if s.get('popust'):
+                c.setFont(fn, 6.5)
+                c.setFillColorRGB(0.4, 0.4, 0.4)
+                c.drawString(col_x[0] + 6, y - 8,
+                             f"Popust {fmt_iznos(s['popust'])}%: "
+                             f"{fmt_iznos(-s.get('popust_iznos', 0))} EUR")
+                c.setFillColorRGB(0, 0, 0)
+                y -= 9
             y -= 16
 
             if y < 180:  # Nova stranica ako nema mjesta

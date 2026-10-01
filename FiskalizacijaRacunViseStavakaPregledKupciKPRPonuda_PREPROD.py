@@ -2115,6 +2115,7 @@ class BillingApp(QWidget):
         cert_layout.addRow("Lozinka ključa:", self.key_password_input)
 
         self.init_cert_btn = QPushButton("🔐  Inicijaliziraj certifikat")
+        self.init_cert_btn.
         self.init_cert_btn.clicked.connect(self.init_certifikat)
         cert_layout.addRow(self.init_cert_btn)
 

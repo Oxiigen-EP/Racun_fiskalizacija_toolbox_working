@@ -19,3 +19,6 @@ _backup/
 __pycache__/
 *.pyc
 .idea/
+# Evidencija poslovanja (11 godina)
+arhiva/
+backup/

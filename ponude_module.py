@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QDate, Signal
 from PySide6.QtGui import QFont, QColor
 from format_util import fmt_iznos, parse_iznos
+from novac import izracun_stavke, ukupno_stavki
 
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas as rl_canvas
@@ -672,7 +673,7 @@ class NovaPonudaDialog(QDialog):
             kol    = parse_iznos(self.stavke_tabla.item(row, 1).text() or 0)
             cijena = parse_iznos(self.stavke_tabla.item(row, 3).text() or 0)
             pdv    = parse_iznos(self.stavke_tabla.item(row, 4).text() or 0)
-            ukupno = round(kol * cijena * (1 + pdv / 100), 2)
+            ukupno = izracun_stavke(kol, cijena, pdv)['ukupno']
             self.stavke_tabla.blockSignals(True)
             self.stavke_tabla.item(row, 5).setText(f"{fmt_iznos(ukupno)}")
             self.stavke_tabla.blockSignals(False)
@@ -694,8 +695,8 @@ class NovaPonudaDialog(QDialog):
                 pdv      = parse_iznos(cell(4) or 0)
             except ValueError:
                 kolicina, cijena, pdv = 1.0, 0.0, 0.0
-            osnov    = round(kolicina * cijena, 2)
-            pdv_izn  = round(osnov * pdv / 100, 2)
+            _r       = izracun_stavke(kolicina, cijena, pdv)
+            osnov, pdv_izn = _r['osnovica'], _r['pdv_iznos']
             stavke.append({
                 'naziv': naziv,
                 'kolicina': kolicina,
@@ -704,7 +705,7 @@ class NovaPonudaDialog(QDialog):
                 'pdv_stopa': pdv,
                 'ukupno_bez_pdv': osnov,
                 'pdv_iznos': pdv_izn,
-                'ukupno': round(osnov + pdv_izn, 2),
+                'ukupno': _r['ukupno'],
             })
         return stavke
 
@@ -725,7 +726,7 @@ class NovaPonudaDialog(QDialog):
         operater   = self.operater_input.text().strip()
         u_pdv      = int(self.pdv_check.isChecked())
         napomena   = self.napomena_input.toPlainText().strip()
-        ukupno     = round(sum(s['ukupno'] for s in stavke), 2)
+        ukupno     = ukupno_stavki(stavke)
         now_iso    = datetime.now().isoformat()
 
         if self._edit_id:

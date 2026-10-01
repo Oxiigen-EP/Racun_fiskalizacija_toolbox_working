@@ -8,6 +8,8 @@ def fmt_iznos(vrijednost, decimale: int = 2) -> str:
         v = float(vrijednost)
     except (TypeError, ValueError):
         return str(vrijednost)
+    if v == 0:
+        v = 0.0                       # bez "-0,00"
     s = f"{v:,.{decimale}f}"          # 1,234.50
     return s.replace(",", "\0").replace(".", ",").replace("\0", ".")
 

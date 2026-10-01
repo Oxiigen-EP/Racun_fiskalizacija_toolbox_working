@@ -146,6 +146,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QFont
 from format_util import fmt_iznos, parse_iznos
+from novac import izracun_stavke
 
 
 def _tc():
@@ -382,6 +383,7 @@ class DetaljiRacunaDialog(QDialog):
                 'kolicina': kolicina,
                 'jedinica': jedinica or 'kom',
                 'cijena': -abs(cijena),   # negativna cijena
+                'popust': popust or 0,
                 'pdv_stopa': pdv_stopa or 0,
             })
 
@@ -441,17 +443,18 @@ class DetaljiRacunaDialog(QDialog):
         stavke_za_pdf = []
         for s in self._stavke:
             naziv, kolicina, jedinica, cijena, pdv_stopa, popust = s
-            osnova = round(kolicina * cijena, 2)
-            pdv_iznos = round(osnova * (pdv_stopa or 0) / 100, 2)
+            red = izracun_stavke(kolicina, cijena, pdv_stopa or 0, popust or 0)
             stavke_za_pdf.append({
                 'naziv':         naziv or '',
                 'kolicina':      kolicina,
                 'jedinica':      jedinica or 'kom',
                 'cijena':        cijena,
+                'popust':        red['popust'],
+                'popust_iznos':  red['popust_iznos'],
                 'pdv_stopa':     pdv_stopa or 0.0,
-                'ukupno_bez_pdv': osnova,
-                'pdv_iznos':     pdv_iznos,
-                'ukupno':        round(osnova + pdv_iznos, 2),
+                'ukupno_bez_pdv': red['osnovica'],
+                'pdv_iznos':     red['pdv_iznos'],
+                'ukupno':        red['ukupno'],
             })
 
         # Normaliziraj datum/vrijeme za QR i PDF generator
@@ -650,7 +653,7 @@ class DetaljiRacunaDialog(QDialog):
         sg_layout.setContentsMargins(10, 8, 10, 10)
 
         tbl = QTableWidget()
-        cols_hdr = ["Naziv / Opis", "Kol.", "Jed.", "Cijena (EUR)",
+        cols_hdr = ["Naziv / Opis", "Kol.", "Jed.", "Cijena (EUR)", "Popust",
                     "PDV %", "Osnova (EUR)", "Ukupno (EUR)"]
         tbl.setColumnCount(len(cols_hdr))
         tbl.setHorizontalHeaderLabels(cols_hdr)
@@ -689,9 +692,9 @@ class DetaljiRacunaDialog(QDialog):
 
         for s in self._stavke:
             naziv, kolicina, jedinica, cijena, pdv_stopa, popust = s
-            osnova = round(kolicina * cijena, 2)
-            pdv_iznos = round(osnova * (pdv_stopa or 0) / 100, 2)
-            ukupno_s = round(osnova + pdv_iznos, 2)
+            red_s = izracun_stavke(kolicina, cijena, pdv_stopa or 0, popust or 0)
+            osnova, pdv_iznos, ukupno_s = (
+                red_s['osnovica'], red_s['pdv_iznos'], red_s['ukupno'])
             uk_osnova += osnova
             uk_pdv_iznos += pdv_iznos
             uk_ukupno += ukupno_s
@@ -716,9 +719,10 @@ class DetaljiRacunaDialog(QDialog):
             si(1, f"{fmt_iznos(kolicina)}", right=True)
             si(2, jedinica or "kom")
             si(3, f"{fmt_iznos(cijena)}", right=True, red=is_neg)
-            si(4, f"{pdv_stopa:.0f}%" if u_pdv else "-", right=True)
-            si(5, f"{fmt_iznos(osnova)}" if u_pdv else "-", right=True, red=is_neg)
-            si(6, f"{fmt_iznos(ukupno_s)}", right=True, bold=True, red=is_neg)
+            si(4, f"{fmt_iznos(popust)}%" if popust else "-", right=True)
+            si(5, f"{pdv_stopa:.0f}%" if u_pdv else "-", right=True)
+            si(6, f"{fmt_iznos(osnova)}" if u_pdv else "-", right=True, red=is_neg)
+            si(7, f"{fmt_iznos(ukupno_s)}", right=True, bold=True, red=is_neg)
 
         # Redak zbroja
         if self._stavke:
@@ -761,8 +765,8 @@ class DetaljiRacunaDialog(QDialog):
             tbl.item(row, 0).setText("UKUPNO")
             tbl.item(row, 0).setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
             if u_pdv:
-                si_uk(5, f"{fmt_iznos(uk_osnova)}")
-            si_uk(6, f"{fmt_iznos(uk_ukupno)} EUR")
+                si_uk(6, f"{fmt_iznos(uk_osnova)}")
+            si_uk(7, f"{fmt_iznos(uk_ukupno)} EUR")
 
         sg_layout.addWidget(tbl)
         layout.addWidget(stavke_group)
@@ -772,9 +776,9 @@ class DetaljiRacunaDialog(QDialog):
             pdv_grupe = {}
             for s in self._stavke:
                 naziv, kol, jed, cij, stopa, pop = s
-                osnova = round(kol * cij, 2)
-                pdv_iz = round(osnova * (stopa or 0) / 100, 2)
-                ukupno_s = round(osnova + pdv_iz, 2)
+                red_g = izracun_stavke(kol, cij, stopa or 0, pop or 0)
+                osnova, pdv_iz, ukupno_s = (
+                    red_g['osnovica'], red_g['pdv_iznos'], red_g['ukupno'])
                 k = stopa or 0
                 if k not in pdv_grupe:
                     pdv_grupe[k] = [0.0, 0.0, 0.0]
