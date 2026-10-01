@@ -2117,6 +2117,25 @@ class BillingApp(QWidget):
         # Stavke
         stavke = self.stavke_widget.get_stavke()
 
+        # Jedan izvor vremena: fiskalizirani račun nosi stvarno vrijeme
+        # izdavanja (isto u CIS-u, ZKI-ju, QR-u i na PDF-u), pa njegov datum
+        # ne smije biti unatrag ni unaprijed. Računi bez fiskalizacije
+        # (pravna osoba) mogu imati ručno odabran datum.
+        if not pravna_osoba and self.fiskalizacija:
+            danas = QDate.currentDate()
+            if self.datum_edit.date() != danas:
+                odgovor = QMessageBox.question(
+                    self, "Datum računa",
+                    f"Odabrani datum ({datum}) nije današnji.\n\n"
+                    "Fiskalizirani račun mora nositi stvarno vrijeme izdavanja, "
+                    f"pa će datum biti postavljen na današnji "
+                    f"({danas.toString('dd.MM.yyyy')}).\n\nNastaviti?")
+                if odgovor != QMessageBox.StandardButton.Yes:
+                    return
+                self.datum_edit.setDate(danas)   # ažurira i rok za T
+                datum = danas.toString("dd.MM.yyyy")
+                rok = self.rok_edit.date().toString("dd.MM.yyyy")
+
         # Validacija
         if len(oib) != 11 or not oib.isdigit():
             QMessageBox.warning(self, "Greška", "OIB mora imati 11 znamenki!")

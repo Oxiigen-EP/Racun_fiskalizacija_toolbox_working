@@ -23,6 +23,20 @@ _MIGRACIJE_FISKALIZACIJA = [
 ]
 
 
+# Indeksi za upite koje aplikacija stalno radi (IF NOT EXISTS: sigurno za
+# ponovno pokretanje i za stare baze).
+_INDEKSI = [
+    "CREATE INDEX IF NOT EXISTS idx_stavke_racun ON invoice_stavke(invoice_id)",
+    "CREATE INDEX IF NOT EXISTS idx_racuni_fisk ON invoices(fiskaliziran, pravna_osoba)",
+    "CREATE INDEX IF NOT EXISTS idx_racuni_broj ON invoices(broj_racuna)",
+    "CREATE INDEX IF NOT EXISTS idx_racuni_kupac ON invoices(oib_kupca)",
+    "CREATE INDEX IF NOT EXISTS idx_kpr_racun ON kpr(invoice_id)",
+    "CREATE INDEX IF NOT EXISTS idx_kupci_oib ON kupci(oib)",
+    "CREATE INDEX IF NOT EXISTS idx_kupci_naziv ON kupci(naziv)",
+    "CREATE INDEX IF NOT EXISTS idx_ponude_stavke ON ponuda_stavke(ponuda_id)",
+]
+
+
 def _pokusaj(cursor, sql):
     try:
         cursor.execute(sql)
@@ -97,6 +111,9 @@ def inicijaliziraj_shemu(conn, cursor):
         _pokusaj(cursor, sql)
     conn.commit()
     inicijaliziraj_ponude_tablice(conn, cursor)
+    for sql in _INDEKSI:
+        _pokusaj(cursor, sql)     # vrlo stara baza može nemati neki stupac
+    conn.commit()
 
 
 # Zadnja otvorena veza; moduli sučelja (KPR, detalji računa) je dohvaćaju
@@ -109,6 +126,9 @@ def otvori_bazu(putanja):
     """Otvara (i po potrebi stvara/migrira) bazu. Vraća (conn, cursor)."""
     global conn, cursor
     conn = sqlite3.connect(putanja)
+    # Strani ključevi u SQLite-u su po zadanom isključeni; moraju se uključiti
+    # na svakoj vezi (i to izvan transakcije, dakle odmah nakon connect).
+    conn.execute("PRAGMA foreign_keys = ON")
     cursor = conn.cursor()
     inicijaliziraj_shemu(conn, cursor)
     return conn, cursor

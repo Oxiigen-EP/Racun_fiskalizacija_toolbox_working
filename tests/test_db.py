@@ -64,3 +64,23 @@ def test_backup_baze(tmp_path):
     cfg.write_text('{"backup_mapa": ""}')
     putanja = db.backup_baze(conn, str(cfg), str(tmp_path))
     assert putanja and (tmp_path / "backup").exists()
+
+
+def test_strani_kljucevi_su_ukljuceni(tmp_path):
+    import pytest
+    conn, cur = db.otvori_bazu(str(tmp_path / "t.db"))
+    assert cur.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+    with pytest.raises(sqlite3.IntegrityError):
+        cur.execute("INSERT INTO invoice_stavke (invoice_id, naziv) "
+                    "VALUES (9999, 'siroče')")
+
+
+def test_indeksi_postoje_i_migracija_ih_ne_dupla(tmp_path):
+    p = str(tmp_path / "t.db")
+    conn, cur = db.otvori_bazu(p)
+    conn.close()
+    conn, cur = db.otvori_bazu(p)
+    indeksi = {r[0] for r in cur.execute(
+        "SELECT name FROM sqlite_master WHERE type='index'")}
+    assert {"idx_stavke_racun", "idx_racuni_fisk", "idx_kpr_racun",
+            "idx_kupci_oib", "idx_ponude_stavke"} <= indeksi
