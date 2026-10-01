@@ -24,18 +24,7 @@ from novac import izracun_stavke, ukupno_stavki
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas as rl_canvas
 
-# get_font uvozimo iz glavnog modula (registrira TTF s hrvatskim slovima)
-try:
-    from FiskalizacijaRacunViseStavakaPregledKupciKPR_PREPROD import get_font as _get_font
-except ImportError:
-    # Fallback ako se modul zove drugačije — pokušaj generičkim imenom
-    try:
-        import importlib, sys
-        _main = [m for m in sys.modules.values()
-                 if hasattr(m, 'get_font') and m.__name__ != __name__]
-        _get_font = _main[0].get_font if _main else None
-    except Exception:
-        _get_font = None
+from fontovi import get_font as _get_font
 
 
 def _font():

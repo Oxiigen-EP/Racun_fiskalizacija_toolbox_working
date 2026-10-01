@@ -147,6 +147,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QFont
 from format_util import fmt_iznos, parse_iznos
 from novac import izracun_stavke
+from postavke import PDV_OSLOBODENJE_TEKSTOVI
 
 
 def _tc():
@@ -175,9 +176,9 @@ class DetaljiRacunaDialog(QDialog):
         self.setMinimumSize(750, 620)
         self.setModal(True)
 
-        import __main__ as _m
-        self._cursor = _m.cursor
-        self._conn = _m.conn
+        import db as _db
+        self._cursor = _db.cursor
+        self._conn = _db.conn
         self._racun = self._dohvati_racun()
         self._stavke = self._dohvati_stavke()
 
@@ -466,7 +467,7 @@ class DetaljiRacunaDialog(QDialog):
         pdv_oslobodenje = None
         if not u_pdv:
             try:
-                pdv_oslobodenje = _m.PDV_OSLOBODENJE_TEKSTOVI[0]
+                pdv_oslobodenje = PDV_OSLOBODENJE_TEKSTOVI[0]
             except Exception:
                 pdv_oslobodenje = "Nije obveznik PDV-a — PDV nije obračunan"
 

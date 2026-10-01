@@ -346,9 +346,9 @@ class KPRWidget(QWidget):
         super().__init__()
         # Ako nisu proslijeđeni, uvezi globalne iz __main__
         if conn is None or cursor is None:
-            import __main__ as _m
-            self._conn = _m.conn
-            self._cursor = _m.cursor
+            import db as _db
+            self._conn = _db.conn
+            self._cursor = _db.cursor
         else:
             self._conn = conn
             self._cursor = cursor

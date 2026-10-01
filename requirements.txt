@@ -1,0 +1,7 @@
+PySide6
+reportlab
+lxml
+cryptography
+requests
+qrcode[pil]
+pytest
