@@ -299,7 +299,7 @@ class DetaljiRacunaDialog(QDialog):
                     id, broj_racuna, datum, rok_placanja, nacin_placanja,
                     oib_izdavatelja, naziv_izdavatelja, adresa_izdavatelja, iban,
                     oib_kupca, naziv_kupca, adresa_kupca,
-                    oznaka_pp, oznaka_nu, ukupan_iznos,
+                    oznaka_pp, oznaka_nu, ukupan_iznos_cent / 100.0,
                     napomena, jir, zki, fiskaliziran, datum_fiskalizacije,
                     u_sustavu_pdv, pravna_osoba, operater, datum_kreiranja
                 FROM invoices WHERE id=?
@@ -322,7 +322,7 @@ class DetaljiRacunaDialog(QDialog):
     def _dohvati_stavke(self):
         try:
             return self._cursor.execute("""
-                SELECT naziv, kolicina, jedinica, cijena, pdv_stopa, popust
+                SELECT naziv, kolicina, jedinica, cijena_cent / 100.0, pdv_stopa, popust
                 FROM invoice_stavke
                 WHERE invoice_id=?
                 ORDER BY id

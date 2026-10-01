@@ -36,6 +36,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QFont
 from format_util import fmt_iznos, parse_iznos
+from novac import u_centima
 
 
 def _tc():
@@ -130,8 +131,8 @@ def inicijaliziraj_kpr_tablicu(conn, cursor):
             datum           TEXT NOT NULL,
             broj_temeljnice TEXT,
             opis            TEXT,
-            gotovina        REAL DEFAULT 0,
-            virmanski       REAL DEFAULT 0,
+            gotovina_cent   INTEGER DEFAULT 0,
+            virmanski_cent  INTEGER DEFAULT 0,
             invoice_id      INTEGER,
             rucno_dodano    INTEGER DEFAULT 0,
             UNIQUE(godina, redni_broj)
@@ -173,13 +174,13 @@ def _dodaj_u_kpr(conn, cursor, invoice_id: int, nacin_kod: str,
         cursor.execute("""
             INSERT INTO kpr
                 (godina, redni_broj, datum, broj_temeljnice, opis,
-                 gotovina, virmanski, invoice_id, rucno_dodano)
+                 gotovina_cent, virmanski_cent, invoice_id, rucno_dodano)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)
         """, (
             godina, redni, datum,
             broj_racuna_str,
             f"Račun {broj_racuna_str}",
-            round(gotovina, 2), round(virmanski, 2),
+            u_centima(gotovina), u_centima(virmanski),
             invoice_id
         ))
         conn.commit()
@@ -226,7 +227,7 @@ def oznaci_naplaceno(conn, cursor, invoice_id: int, datum_naplate: str):
     """Označava račun naplaćenim i upisuje ga u KPR s datumom naplate
     (dd.MM.yyyy). Vraća (uspjeh, poruka_greške)."""
     r = cursor.execute(
-        "SELECT broj_racuna, nacin_placanja, ukupan_iznos, placeno "
+        "SELECT broj_racuna, nacin_placanja, ukupan_iznos_cent / 100.0, placeno "
         "FROM invoices WHERE id=?", (invoice_id,)).fetchone()
     if not r:
         return False, "Račun nije pronađen."
@@ -536,7 +537,7 @@ class KPRWidget(QWidget):
         try:
             rows = self._cursor.execute("""
                 SELECT id, redni_broj, datum, broj_temeljnice, opis,
-                       gotovina, virmanski, rucno_dodano
+                       gotovina_cent / 100.0, virmanski_cent / 100.0, rucno_dodano
                 FROM kpr
                 WHERE godina=?
                 ORDER BY redni_broj
@@ -639,10 +640,11 @@ class KPRWidget(QWidget):
             self._cursor.execute("""
                 INSERT INTO kpr
                     (godina, redni_broj, datum, broj_temeljnice, opis,
-                     gotovina, virmanski, rucno_dodano)
+                     gotovina_cent, virmanski_cent, rucno_dodano)
                 VALUES (?, ?, ?, ?, ?, ?, ?, 1)
             """, (godina, redni, datum, p['broj_temeljnice'],
-                  p['opis'], p['gotovina'], p['virmanski']))
+                  p['opis'], u_centima(p['gotovina']),
+                  u_centima(p['virmanski'])))
             self._conn.commit()
 
             # Ažuriraj dropdown ako je nova godina
@@ -670,7 +672,8 @@ class KPRWidget(QWidget):
             return
         try:
             r = self._cursor.execute(
-                "SELECT datum, broj_temeljnice, opis, gotovina, virmanski "
+                "SELECT datum, broj_temeljnice, opis, "
+                "gotovina_cent / 100.0, virmanski_cent / 100.0 "
                 "FROM kpr WHERE id=?", (db_id,)
             ).fetchone()
             if not r:
@@ -689,10 +692,11 @@ class KPRWidget(QWidget):
         try:
             self._cursor.execute("""
                 UPDATE kpr SET datum=?, broj_temeljnice=?, opis=?,
-                    gotovina=?, virmanski=?, rucno_dodano=1
+                    gotovina_cent=?, virmanski_cent=?, rucno_dodano=1
                 WHERE id=?
             """, (p['datum'], p['broj_temeljnice'], p['opis'],
-                  p['gotovina'], p['virmanski'], db_id))
+                  u_centima(p['gotovina']), u_centima(p['virmanski']),
+                  db_id))
             self._conn.commit()
             self.osvjezi()
         except Exception as e:

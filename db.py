@@ -37,6 +37,58 @@ _INDEKSI = [
 ]
 
 
+# Novčani stupci: (tablica, stari REAL stupac). Novi se zove <stari>_cent i
+# sadrži cijeli broj centi. Preimenovanje je namjerno: kod koji još čita stari
+# naziv javlja grešku umjesto da tiho prikaže pogrešan iznos.
+_NOVCANI_STUPCI = [
+    ("invoices", "ukupan_iznos"),
+    ("invoice_stavke", "cijena"),
+    ("kpr", "gotovina"),
+    ("kpr", "virmanski"),
+    ("ponude", "ukupan_iznos"),
+    ("ponuda_stavke", "cijena"),
+]
+
+
+def _stupci(cursor, tablica):
+    return {r[1] for r in cursor.execute(f"PRAGMA table_info({tablica})")}
+
+
+def migriraj_na_cente(conn, cursor):
+    """Stare baze (iznosi kao REAL u eurima) prebacuje na cijele brojeve
+    centi. Prije izmjene sprema kopiju datoteke baze (<baza>.pred-centi.bak).
+    Vraća True ako je migracija provedena."""
+    posao = [(t, s) for t, s in _NOVCANI_STUPCI
+             if s in _stupci(cursor, t) and f"{s}_cent" not in _stupci(cursor, t)]
+    if not posao:
+        return False
+    if sqlite3.sqlite_version_info < (3, 35):
+        raise RuntimeError(
+            f"SQLite {sqlite3.sqlite_version} je prestar za migraciju "
+            "(treba 3.35+). Nadogradi Python.")
+
+    putanja = cursor.execute("PRAGMA database_list").fetchone()[2]
+    if putanja and os.path.exists(putanja):
+        kopija = putanja + ".pred-centi.bak"
+        if not os.path.exists(kopija):
+            conn.commit()
+            dest = sqlite3.connect(kopija)
+            with dest:
+                conn.backup(dest)
+            dest.close()
+            print(f"💾 Kopija baze prije prelaska na cente: {kopija}")
+
+    for tablica, stupac in posao:
+        novi = f"{stupac}_cent"
+        cursor.execute(f"ALTER TABLE {tablica} ADD COLUMN {novi} INTEGER DEFAULT 0")
+        cursor.execute(f"UPDATE {tablica} SET {novi} = "
+                       f"CAST(ROUND(COALESCE({stupac}, 0) * 100) AS INTEGER)")
+        cursor.execute(f"ALTER TABLE {tablica} DROP COLUMN {stupac}")
+    conn.commit()
+    print(f"✅ Iznosi prebačeni u cente: {', '.join(f'{t}.{s}' for t, s in posao)}")
+    return True
+
+
 def _pokusaj(cursor, sql):
     try:
         cursor.execute(sql)
@@ -62,7 +114,7 @@ def inicijaliziraj_shemu(conn, cursor):
             oznaka_pp           TEXT,
             oznaka_nu           TEXT,
             u_sustavu_pdv       INTEGER DEFAULT 1,
-            ukupan_iznos        REAL,
+            ukupan_iznos_cent   INTEGER,
             napomena            TEXT,
             jir                 TEXT,
             zki                 TEXT,
@@ -86,7 +138,7 @@ def inicijaliziraj_shemu(conn, cursor):
             naziv       TEXT,
             kolicina    REAL,
             jedinica    TEXT,
-            cijena      REAL,
+            cijena_cent INTEGER,
             pdv_stopa   REAL,
             popust      REAL DEFAULT 0,
             FOREIGN KEY (invoice_id) REFERENCES invoices(id)
@@ -111,6 +163,7 @@ def inicijaliziraj_shemu(conn, cursor):
         _pokusaj(cursor, sql)
     conn.commit()
     inicijaliziraj_ponude_tablice(conn, cursor)
+    migriraj_na_cente(conn, cursor)
     for sql in _INDEKSI:
         _pokusaj(cursor, sql)     # vrlo stara baza može nemati neki stupac
     conn.commit()

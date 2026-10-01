@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QDate, Signal
 from PySide6.QtGui import QFont, QColor
 from format_util import fmt_iznos, parse_iznos
-from novac import izracun_stavke, ukupno_stavki
+from novac import izracun_stavke, ukupno_stavki, u_centima, iz_centi
 
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas as rl_canvas
@@ -104,7 +104,7 @@ def inicijaliziraj_ponude_tablice(conn, cursor):
             naziv_kupca     TEXT,
             adresa_kupca    TEXT,
             u_sustavu_pdv   INTEGER DEFAULT 0,
-            ukupan_iznos    REAL DEFAULT 0.0,
+            ukupan_iznos_cent INTEGER DEFAULT 0,
             napomena        TEXT,
             operater        TEXT,
             datum_kreiranja TEXT,
@@ -119,7 +119,7 @@ def inicijaliziraj_ponude_tablice(conn, cursor):
             naziv       TEXT,
             kolicina    REAL,
             jedinica    TEXT,
-            cijena      REAL,
+            cijena_cent INTEGER,
             pdv_stopa   REAL DEFAULT 0,
             FOREIGN KEY (ponuda_id) REFERENCES ponude(id)
         )
@@ -142,26 +142,32 @@ def sljedeci_broj_ponude(cursor):
     return f"PON-{god}-{n:03d}"
 
 
+def _ponuda_u_dict(opis_stupaca, redak):
+    """Red iz 'SELECT * FROM ponude' kao rječnik; iznos je u eurima
+    ('ukupan_iznos'), a u bazi je u centima ('ukupan_iznos_cent')."""
+    d = dict(zip([c[0] for c in opis_stupaca], redak))
+    d['ukupan_iznos'] = iz_centi(d.get('ukupan_iznos_cent'))
+    return d
+
+
 def dohvati_stavke_ponude(cursor, ponuda_id):
     """Vraća stavke za danu ponudu kao listu dict-ova."""
     rows = cursor.execute("""
-        SELECT naziv, kolicina, jedinica, cijena, pdv_stopa
+        SELECT naziv, kolicina, jedinica, cijena_cent / 100.0, pdv_stopa
         FROM ponuda_stavke WHERE ponuda_id=?
     """, (ponuda_id,)).fetchall()
     stavke = []
     for naziv, kolicina, jedinica, cijena, pdv_stopa in rows:
-        osnov = kolicina * cijena
-        pdv_iznos = round(osnov * pdv_stopa / 100, 2)
-        ukupno = round(osnov + pdv_iznos, 2)
+        red = izracun_stavke(kolicina, cijena, pdv_stopa or 0)
         stavke.append({
             'naziv': naziv,
             'kolicina': kolicina,
             'jedinica': jedinica,
             'cijena': cijena,
             'pdv_stopa': pdv_stopa,
-            'ukupno_bez_pdv': round(osnov, 2),
-            'pdv_iznos': pdv_iznos,
-            'ukupno': ukupno,
+            'ukupno_bez_pdv': red['osnovica'],
+            'pdv_iznos': red['pdv_iznos'],
+            'ukupno': red['ukupno'],
         })
     return stavke
 
@@ -722,11 +728,11 @@ class NovaPonudaDialog(QDialog):
             self.cursor.execute("""
                 UPDATE ponude SET
                     datum=?, rok_valjanosti=?, oib_kupca=?, naziv_kupca=?,
-                    adresa_kupca=?, u_sustavu_pdv=?, ukupan_iznos=?,
+                    adresa_kupca=?, u_sustavu_pdv=?, ukupan_iznos_cent=?,
                     napomena=?, operater=?
                 WHERE id=?
             """, (datum, rok_val, oib_kupca, naziv, adresa, u_pdv,
-                  ukupno, napomena, operater, self._edit_id))
+                  u_centima(ukupno), napomena, operater, self._edit_id))
             self.conn.commit()
             self.cursor.execute(
                 "DELETE FROM ponuda_stavke WHERE ponuda_id=?",
@@ -743,13 +749,13 @@ class NovaPonudaDialog(QDialog):
                     broj_ponude, datum, rok_valjanosti,
                     oib_izdavatelja, naziv_izdavatelja, adresa_izdavatelja, iban,
                     oib_kupca, naziv_kupca, adresa_kupca,
-                    u_sustavu_pdv, ukupan_iznos, napomena,
+                    u_sustavu_pdv, ukupan_iznos_cent, napomena,
                     operater, datum_kreiranja, status
                 ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (broj, datum, rok_val,
                   oib_izd, naziv_izd, adresa_izd, iban_izd,
                   oib_kupca, naziv, adresa,
-                  u_pdv, ukupno, napomena,
+                  u_pdv, u_centima(ukupno), napomena,
                   operater, now_iso, STATUS_DRAFT))
             self.conn.commit()
             ponuda_id = self.cursor.lastrowid
@@ -757,10 +763,10 @@ class NovaPonudaDialog(QDialog):
         for s in stavke:
             self.cursor.execute("""
                 INSERT INTO ponuda_stavke
-                (ponuda_id, naziv, kolicina, jedinica, cijena, pdv_stopa)
+                (ponuda_id, naziv, kolicina, jedinica, cijena_cent, pdv_stopa)
                 VALUES (?,?,?,?,?,?)
             """, (ponuda_id, s['naziv'], s['kolicina'],
-                  s['jedinica'], s['cijena'], s['pdv_stopa']))
+                  s['jedinica'], u_centima(s['cijena']), s['pdv_stopa']))
         self.conn.commit()
 
         self._rezultat = ponuda_id
@@ -769,8 +775,7 @@ class NovaPonudaDialog(QDialog):
             ponuda_row = self.cursor.execute(
                 "SELECT * FROM ponude WHERE id=?", (ponuda_id,)
             ).fetchone()
-            cols = [d[0] for d in self.cursor.description]
-            ponuda_dict = dict(zip(cols, ponuda_row))
+            ponuda_dict = _ponuda_u_dict(self.cursor.description, ponuda_row)
             generiraj_pdf_ponude(ponuda_dict, stavke, self.config)
             QMessageBox.information(
                 self, "Uspjeh",
@@ -941,7 +946,7 @@ class PonudeWidget(QWidget):
 
         rows = self._cursor.execute("""
             SELECT id, broj_ponude, datum, rok_valjanosti, naziv_kupca,
-                   ukupan_iznos, status, operater, invoice_id
+                   ukupan_iznos_cent / 100.0, status, operater, invoice_id
             FROM ponude ORDER BY id DESC
         """).fetchall()
 
@@ -1012,8 +1017,7 @@ class PonudeWidget(QWidget):
             "SELECT * FROM ponude WHERE id=?", (ponuda_id,)).fetchone()
         if not row_data:
             return
-        cols = [d[0] for d in self._cursor.description]
-        ponuda_dict = dict(zip(cols, row_data))
+        ponuda_dict = _ponuda_u_dict(self._cursor.description, row_data)
         stavke = dohvati_stavke_ponude(self._cursor, ponuda_id)
 
         dlg = NovaPonudaDialog(
@@ -1031,8 +1035,7 @@ class PonudeWidget(QWidget):
             return
         row_data = self._cursor.execute(
             "SELECT * FROM ponude WHERE id=?", (ponuda_id,)).fetchone()
-        cols = [d[0] for d in self._cursor.description]
-        ponuda_dict = dict(zip(cols, row_data))
+        ponuda_dict = _ponuda_u_dict(self._cursor.description, row_data)
         stavke = dohvati_stavke_ponude(self._cursor, ponuda_id)
         fname = generiraj_pdf_ponude(ponuda_dict, stavke, self._config_getter())
         QMessageBox.information(self, "PDF generiran",
@@ -1076,8 +1079,7 @@ class PonudeWidget(QWidget):
 
         row_data = self._cursor.execute(
             "SELECT * FROM ponude WHERE id=?", (ponuda_id,)).fetchone()
-        cols = [d[0] for d in self._cursor.description]
-        ponuda_dict = dict(zip(cols, row_data))
+        ponuda_dict = _ponuda_u_dict(self._cursor.description, row_data)
         stavke = dohvati_stavke_ponude(self._cursor, ponuda_id)
 
         # Emitira signal prema BillingApp koji će popuniti formu

@@ -8,7 +8,7 @@ Pravila, ista na svim mjestima (unos, spremanje, PDF, XML, detalji):
   ukupno     = osnovica + PDV
 Zbrojevi su zbrojevi već zaokruženih redaka, pa se redci, PDV razrada i
 ukupni iznos uvijek točno slažu. Vrijednosti se vraćaju kao float (točno
-2 decimale) jer baza i ostatak koda koriste REAL.
+2 decimale), a u bazi se iznosi čuvaju kao cijeli brojevi centi (stupci *_cent).
 """
 from decimal import Decimal, ROUND_HALF_UP
 
@@ -21,6 +21,16 @@ def D(vrijednost) -> Decimal:
 
 def cent(vrijednost) -> Decimal:
     return D(vrijednost).quantize(CENT, rounding=ROUND_HALF_UP)
+
+
+def u_centima(iznos) -> int:
+    """Iznos u eurima -> cijeli broj centi (za spremanje u bazu)."""
+    return int(cent(iznos) * 100)
+
+
+def iz_centi(centi) -> float:
+    """Cijeli broj centi iz baze -> iznos u eurima (točno 2 decimale)."""
+    return float(Decimal(int(centi or 0)) / 100) + 0.0
 
 
 def _f(d: Decimal) -> float:

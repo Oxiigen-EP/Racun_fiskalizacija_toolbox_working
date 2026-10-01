@@ -35,7 +35,7 @@ def test_migracija_stare_baze(tmp_path):
     conn, cur = db.otvori_bazu(p)
     stupci = {r[1] for r in cur.execute("PRAGMA table_info(invoices)")}
     assert {"pravna_osoba", "broj_racuna", "vrijeme_izdavanja"} <= stupci
-    assert cur.execute("SELECT ukupan_iznos FROM invoices").fetchone()[0] == 5
+    assert cur.execute("SELECT ukupan_iznos_cent FROM invoices").fetchone()[0] == 500
 
 
 def test_brojac_racuna_raste_po_paru_pp_nu(tmp_path):

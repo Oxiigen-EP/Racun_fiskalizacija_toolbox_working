@@ -17,7 +17,8 @@ import db
 from fontovi import get_font
 from fiskalizacija import Fiskalizacija
 from format_util import fmt_iznos, parse_iznos
-from novac import izracun_stavke, ukupno_stavki, pdv_grupe_iz_stavki
+from novac import (izracun_stavke, ukupno_stavki, pdv_grupe_iz_stavki,
+                   u_centima)
 
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
@@ -371,7 +372,8 @@ class PregledRacunaWidget(QWidget):
             rows = cursor.execute("""
                 SELECT
                     id, broj_racuna, datum, naziv_kupca, adresa_kupca,
-                    ukupan_iznos, u_sustavu_pdv, nacin_placanja,
+                    ukupan_iznos_cent / 100.0 AS ukupan_iznos,
+                    u_sustavu_pdv, nacin_placanja,
                     fiskaliziran, jir, zki, oznaka_pp, oznaka_nu,
                     operater, datum_kreiranja, placeno, datum_naplate,
                     pravna_osoba, vrijeme_izdavanja, greska_fisk
@@ -2172,14 +2174,15 @@ class BillingApp(QWidget):
                            datum, rok_placanja, nacin_placanja,
                            oib_izdavatelja, naziv_izdavatelja, adresa_izdavatelja, iban,
                            oib_kupca, naziv_kupca, adresa_kupca,
-                           oznaka_pp, oznaka_nu, u_sustavu_pdv, ukupan_iznos,
+                           oznaka_pp, oznaka_nu, u_sustavu_pdv, ukupan_iznos_cent,
                            napomena, pravna_osoba, broj_racuna, operater, datum_kreiranja
                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                        """, (datum, rok, nacin_kod,
                              oib, naziv_tvrtke, adresa, iban,
                              kupac_oib, kupac_naziv, kupac_adresa,
                              oznaka_pp, oznaka_nu, int(u_sustavu_pdv),
-                             ukupan_iznos, napomena, int(pravna_osoba), broj_racuna_str,
+                             u_centima(ukupan_iznos), napomena,
+                             int(pravna_osoba), broj_racuna_str,
                              operater, now.isoformat()))
         conn.commit()
         invoice_id = cursor.lastrowid
@@ -2197,11 +2200,11 @@ class BillingApp(QWidget):
             cursor.execute("""
                            INSERT INTO invoice_stavke
                            (invoice_id, naziv, kolicina, jedinica,
-                            cijena, pdv_stopa, popust)
+                            cijena_cent, pdv_stopa, popust)
                            VALUES (?, ?, ?, ?, ?, ?, ?)
                            """, (invoice_id, s['naziv'], s['kolicina'],
-                                 s['jedinica'], s['cijena'], s['pdv_stopa'],
-                                 s.get('popust', 0)))
+                                 s['jedinica'], u_centima(s['cijena']),
+                                 s['pdv_stopa'], s.get('popust', 0)))
         conn.commit()
 
         # Fiskalizacija
@@ -2361,7 +2364,7 @@ class BillingApp(QWidget):
             return False, "Certifikat nije inicijaliziran."
         r = cursor.execute("""
             SELECT oib_izdavatelja, broj_racuna, oznaka_pp, oznaka_nu,
-                   ukupan_iznos, u_sustavu_pdv, nacin_placanja, zki,
+                   ukupan_iznos_cent / 100.0, u_sustavu_pdv, nacin_placanja, zki,
                    vrijeme_izdavanja, fiskaliziran, pravna_osoba, pokusaja
             FROM invoices WHERE id=?""", (invoice_id,)).fetchone()
         if not r:
@@ -2379,7 +2382,7 @@ class BillingApp(QWidget):
 
         stavke = []
         for kol, cijena, stopa, popust in cursor.execute(
-                "SELECT kolicina, cijena, pdv_stopa, popust "
+                "SELECT kolicina, cijena_cent / 100.0, pdv_stopa, popust "
                 "FROM invoice_stavke WHERE invoice_id=? ORDER BY id",
                 (invoice_id,)).fetchall():
             red = izracun_stavke(kol, cijena, stopa or 0, popust or 0)
