@@ -9,7 +9,8 @@ from PySide6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout,
                                QLabel, QLineEdit, QPushButton, QMessageBox,
                                QGroupBox, QFormLayout, QCheckBox, QComboBox,
                                QTableWidget, QTableWidgetItem, QHeaderView,
-                               QDateEdit, QTextEdit, QScrollArea, QFrame)
+                               QDateEdit, QTextEdit, QScrollArea, QFrame,
+                               QFileDialog)
 from PySide6.QtCore import Qt, QDate, Signal
 from PySide6.QtGui import QColor, QPalette
 
@@ -27,11 +28,15 @@ from kpr_module import (KPRWidget, oznaci_naplaceno, ponisti_naplatu,
                         NACINI_ODMAH_NAPLACENO)
 from detalji_racuna import DetaljiRacunaDialog
 from ponude_module import PonudeWidget, STATUS_PRETVORENO
+from posd_module import PoSdWidget
+from etsy_module import EtsyWidget
+import etsy
 from theme_module import ThemeManager
 
 
 from postavke import (CONFIG_PATH, BASE_DIR, PDV_OSLOBODENJE_TEKSTOVI,
-                      učitaj_config, spremi_config)
+                      učitaj_config, spremi_config, certifikat_okoline,
+                      je_demo_certifikat)
 
 # Na početku datoteke, nakon importa — dva mala helper razreda
 
@@ -1283,6 +1288,7 @@ class BillingApp(QWidget):
         self.config = učitaj_config()
         self.demo_mode = self.config.get("demo_mode", True)
         self._ponuda_izvor_id = None
+        self._etsy_izvor_id = None
         self._odabrani_kupac_id = None
         self._popunjavanje_kupca = False
 
@@ -1316,34 +1322,52 @@ class BillingApp(QWidget):
         main_layout.setSpacing(10)
         main_layout.setContentsMargins(16, 16, 16, 16)
 
-        # ── Certifikat (sklopivi) ────────────────────────────────────────────
-        cert_group = QGroupBox("Certifikat")
-        cert_outer_layout = QVBoxLayout()
-        cert_outer_layout.setSpacing(0)
-
-        status_bar = QHBoxLayout()
-        status_bar.setSpacing(8)
-
+        # ── Naslov: Fiskalizacija računa + aktivni certifikat ────────────────
+        naslov_bar = QHBoxLayout()
+        naslov_bar.setSpacing(10)
+        self.naslov_label = QLabel("Fiskalizacija računa")
+        self.naslov_label.setStyleSheet("font-size: 18px; font-weight: bold;")
+        naslov_bar.addWidget(self.naslov_label)
+        self.okolina_badge = QLabel()
+        naslov_bar.addWidget(self.okolina_badge)
+        naslov_bar.addStretch()
         self.cert_status_label = QLabel("⚠️  Certifikat nije inicijaliziran")
-        self.cert_status_label.setStyleSheet(f"color: {self.theme_manager.colors['warning']}; font-weight: bold;")
-        status_bar.addWidget(self.cert_status_label)
-        status_bar.addStretch()
+        self.cert_status_label.setStyleSheet(
+            f"color: {self.theme_manager.colors['warning']}; font-weight: bold;")
+        naslov_bar.addWidget(self.cert_status_label)
+        main_layout.addLayout(naslov_bar)
 
-        self.okolina_badge = QLabel(
-            "  🧪 DEMO  " if self.demo_mode else "  🚀 PRODUKCIJA  ")
-        self._stil_okoline(self.theme_manager.colors)
-        status_bar.addWidget(self.okolina_badge)
+        # ── Postavke: sve što se rijetko mijenja ide na poseban tab ──────────
+        postavke_container = QWidget()
+        postavke_layout = QVBoxLayout(postavke_container)
+        postavke_layout.setSpacing(10)
+        postavke_layout.setContentsMargins(16, 16, 16, 16)
 
-        self.toggle_cert_btn = QPushButton("⚙️  Postavke")
-        self.toggle_cert_btn.setFixedWidth(110)
-        self.toggle_cert_btn.setCheckable(True)
-        self.toggle_cert_btn.setObjectName("dangerBtn")
-        self.toggle_cert_btn.clicked.connect(self.toggle_cert_panel)
-        status_bar.addWidget(self.toggle_cert_btn)
+        cert_group = QGroupBox("Certifikat i okolina")
+        cert_group_layout = QVBoxLayout(cert_group)
+        okolina_red = QHBoxLayout()
+        okolina_red.addWidget(QLabel("Aktivni certifikat:"))
+        self.okolina_combo = QComboBox()
+        self.okolina_combo.addItems(["🧪  DEMO certifikat",
+                                     "🚀  PRODUKCIJSKI certifikat"])
+        self.okolina_combo.setCurrentIndex(0 if self.demo_mode else 1)
+        okolina_red.addWidget(self.okolina_combo)
+        okolina_red.addStretch()
+        cert_group_layout.addLayout(okolina_red)
 
-        status_bar.addWidget(self.theme_manager.toggle_btn)
+        self.okolina_opis = QLabel()
+        self.okolina_opis.setWordWrap(True)
+        self.okolina_opis.setStyleSheet("font-size: 11px; font-style: italic;")
+        cert_group_layout.addWidget(self.okolina_opis)
 
-        cert_outer_layout.addLayout(status_bar)
+        # DEMO i PRODUKCIJA imaju svaki svoj certifikat, ključ i lozinku
+        self._prikazani_demo = self.demo_mode
+        self._profili = {
+            True: dict(zip(("cert", "key", "lozinka"),
+                           certifikat_okoline(self.config, True))),
+            False: dict(zip(("cert", "key", "lozinka"),
+                            certifikat_okoline(self.config, False))),
+        }
 
         self.cert_panel = QWidget()
         self.cert_panel.setObjectName("certPanel")
@@ -1353,16 +1377,17 @@ class BillingApp(QWidget):
         cert_layout.setSpacing(8)
 
         self.cert_path_input = QLineEdit()
-        self.cert_path_input.setText(self.config.get("cert_path", ""))
-        cert_layout.addRow("Certifikat (.pem):", self.cert_path_input)
+        cert_layout.addRow("Certifikat (.pem):",
+                           self._red_s_odabirom(self.cert_path_input,
+                                                "Odaberi certifikat"))
 
         self.key_path_input = QLineEdit()
-        self.key_path_input.setText(self.config.get("key_path", ""))
-        cert_layout.addRow("Privatni ključ (.pem):", self.key_path_input)
+        cert_layout.addRow("Privatni ključ (.pem):",
+                           self._red_s_odabirom(self.key_path_input,
+                                                "Odaberi privatni ključ"))
 
         self.key_password_input = QLineEdit()
         self.key_password_input.setEchoMode(QLineEdit.EchoMode.Password)
-        self.key_password_input.setText(self.config.get("key_password", ""))
         self.key_password_input.setPlaceholderText(
             "Ostavite prazno ako nema lozinke")
         cert_layout.addRow("Lozinka ključa:", self.key_password_input)
@@ -1372,11 +1397,12 @@ class BillingApp(QWidget):
         self.init_cert_btn.clicked.connect(self.init_certifikat)
         cert_layout.addRow(self.init_cert_btn)
 
-        self.cert_panel.setVisible(False)
-        cert_outer_layout.addWidget(self.cert_panel)
+        cert_group_layout.addWidget(self.cert_panel)
+        postavke_layout.addWidget(cert_group)
 
-        cert_group.setLayout(cert_outer_layout)
-        main_layout.addWidget(cert_group)
+        self._ucitaj_polja_profila()
+        self.okolina_combo.currentIndexChanged.connect(self._on_okolina_changed)
+        self._osvjezi_okolinu()
 
         # ── Izdavatelj + Kupac ───────────────────────────────────────────────
         stranke_layout = QHBoxLayout()
@@ -1431,14 +1457,8 @@ class BillingApp(QWidget):
         pp_nu_layout.addWidget(self.nu_input)
         firma_layout.addRow("PP / NU:", pp_nu_widget)
 
-        # Gumb za spremanje konfiguracije
-        spremi_config_btn = QPushButton("💾  Spremi kao zadano")
-        spremi_config_btn.setObjectName("dangerBtn")
-        spremi_config_btn.clicked.connect(self.spremi_konfiguraciju)
-        firma_layout.addRow(spremi_config_btn)
-
         firma_group.setLayout(firma_layout)
-        stranke_layout.addWidget(firma_group)
+        postavke_layout.addWidget(firma_group)
 
         # Kupac
         kupac_group = QGroupBox("Kupac")
@@ -1497,6 +1517,41 @@ class BillingApp(QWidget):
         stranke_layout.addWidget(kupac_group)
 
         main_layout.addLayout(stranke_layout)
+
+        # ── Postavke: izgled i spremanje ─────────────────────────────────────
+        etsy_group = QGroupBox("Etsy")
+        etsy_layout = QFormLayout(etsy_group)
+        etsy_layout.setSpacing(8)
+        self.etsy_kljuc_input = QLineEdit()
+        self.etsy_kljuc_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self.etsy_kljuc_input.setText(self.config.get("etsy_api_kljuc", ""))
+        self.etsy_kljuc_input.setPlaceholderText("Etsy API ključ: keystring:shared_secret")
+        etsy_layout.addRow("API ključ:", self.etsy_kljuc_input)
+        self.etsy_redirect_input = QLineEdit()
+        self.etsy_redirect_input.setText(
+            self.config.get("etsy_redirect") or etsy.ZADANI_REDIRECT)
+        etsy_layout.addRow("Redirect URI:", self.etsy_redirect_input)
+        red_trg = QHBoxLayout()
+        self.etsy_trgovine_combo = QComboBox()
+        red_trg.addWidget(self.etsy_trgovine_combo, 1)
+        self.etsy_odspoji_btn = QPushButton("Odspoji")
+        self.etsy_odspoji_btn.clicked.connect(self._etsy_odspoji)
+        red_trg.addWidget(self.etsy_odspoji_btn)
+        etsy_layout.addRow("Povezane trgovine:", red_trg)
+        postavke_layout.addWidget(etsy_group)
+
+        izgled_group = QGroupBox("Izgled")
+        izgled_layout = QHBoxLayout(izgled_group)
+        izgled_layout.addWidget(QLabel("Tema:"))
+        izgled_layout.addWidget(self.theme_manager.toggle_btn)
+        izgled_layout.addStretch()
+        postavke_layout.addWidget(izgled_group)
+
+        spremi_config_btn = QPushButton("💾  Spremi postavke")
+        spremi_config_btn.setObjectName("dangerBtn")
+        spremi_config_btn.clicked.connect(self.spremi_konfiguraciju)
+        postavke_layout.addWidget(spremi_config_btn)
+        postavke_layout.addStretch()
 
         # ── Račun ────────────────────────────────────────────────────────────
         racun_group = QGroupBox("Račun")
@@ -1592,7 +1647,7 @@ class BillingApp(QWidget):
         self.operater_input.setPlaceholderText("Ime i prezime operatera")
         self.operater_input.setFixedWidth(250)
         self.operater_input.setText(self.config.get("operater", ""))
-        racun_layout.addRow("Operater:", self.operater_input)
+        firma_layout.addRow("Operater:", self.operater_input)
 
         racun_group.setLayout(racun_layout)
         main_layout.addWidget(racun_group)
@@ -1655,6 +1710,25 @@ class BillingApp(QWidget):
         self.ponude_widget.pretvori_u_racun.connect(self.prefill_from_ponuda)
         tabs.addTab(self.ponude_widget, "📝  Ponude")
 
+        # ── PO-SD tab ────────────────────────────────────────────────────────
+        self.posd_widget = PoSdWidget(
+            conn, cursor, config_getter=lambda: self.config, parent=self)
+        tabs.addTab(self.posd_widget, "🧾  PO-SD")
+
+        # ── Etsy tab ─────────────────────────────────────────────────────────
+        self.etsy_widget = EtsyWidget(
+            conn, cursor, config_getter=lambda: self.config,
+            config_setter=self._etsy_spremi_config, parent=self)
+        self.etsy_widget.izdaj_racun.connect(self.prefill_from_etsy)
+        tabs.addTab(self.etsy_widget, "🛍️  Etsy")
+
+        # ── Postavke tab ─────────────────────────────────────────────────────
+        postavke_scroll = QScrollArea()
+        postavke_scroll.setWidgetResizable(True)
+        postavke_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        postavke_scroll.setWidget(postavke_container)
+        tabs.addTab(postavke_scroll, "⚙️  Postavke")
+
         # Osvježi tabove kad se prebaci
         def _on_tab_changed(i):
             if i == 1:
@@ -1663,6 +1737,12 @@ class BillingApp(QWidget):
                 self.kpr_widget.osvjezi()
             elif i == 3:
                 self.ponude_widget.osvjezi()
+            elif i == 4:
+                self.posd_widget.osvjezi()
+            elif i == 5:
+                self.etsy_widget.osvjezi()
+            elif i == 6:
+                self._etsy_osvjezi_trgovine()
 
         tabs.currentChanged.connect(_on_tab_changed)
 
@@ -1670,6 +1750,7 @@ class BillingApp(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.addWidget(tabs)
 
+        self._etsy_osvjezi_trgovine()
         self.init_certifikat(silent=True)
 
 
@@ -1926,9 +2007,97 @@ class BillingApp(QWidget):
                 f"QPushButton:hover {{ background-color: {c['accent']}; color: white; }}"
                 f"QPushButton:pressed {{ background-color: {c['accent_hover']}; }}")
 
-    def toggle_cert_panel(self, checked):
-        self.cert_panel.setVisible(checked)
-        self.toggle_cert_btn.setText("✖️ Zatvori" if checked else "⚙️ Postavke")
+    # ── Okolina i certifikat ─────────────────────────────────────────────────
+
+    def _red_s_odabirom(self, polje, naslov):
+        """Polje putanje s gumbom za odabir datoteke."""
+        red = QWidget()
+        red.setStyleSheet("background-color: transparent;")
+        hl = QHBoxLayout(red)
+        hl.setContentsMargins(0, 0, 0, 0)
+        hl.setSpacing(6)
+        hl.addWidget(polje)
+        btn = QPushButton("Odaberi…")
+        btn.setFixedWidth(90)
+        btn.setToolTip(naslov)
+
+        def odaberi():
+            putanja, _ = QFileDialog.getOpenFileName(
+                self, naslov, os.path.dirname(polje.text().strip()) or "",
+                "PEM datoteke (*.pem *.crt *.cer *.key);;Sve datoteke (*)")
+            if putanja:
+                polje.setText(putanja)
+        btn.clicked.connect(odaberi)
+        hl.addWidget(btn)
+        return red
+
+    def _ucitaj_polja_profila(self):
+        pr = self._profili[self._prikazani_demo]
+        self.cert_path_input.setText(pr["cert"])
+        self.key_path_input.setText(pr["key"])
+        self.key_password_input.setText(pr["lozinka"])
+
+    def _spremi_polja_profila(self):
+        self._profili[self._prikazani_demo] = {
+            "cert": self.cert_path_input.text().strip(),
+            "key": self.key_path_input.text().strip(),
+            "lozinka": self.key_password_input.text().strip(),
+        }
+
+    def _cert_podaci(self):
+        """Certifikati obje okoline + aktivna okolina, za config.json."""
+        self._spremi_polja_profila()
+        d, p = self._profili[True], self._profili[False]
+        return {
+            "cert_path": d["cert"], "key_path": d["key"],
+            "key_password": d["lozinka"],
+            "prod_cert_path": p["cert"], "prod_key_path": p["key"],
+            "prod_key_password": p["lozinka"],
+            "demo_mode": self.demo_mode,
+        }
+
+    def _osvjezi_okolinu(self):
+        """Naslov, oznaka i opis prate odabrani certifikat."""
+        naziv = "DEMO certifikat" if self.demo_mode else "PRODUKCIJSKI certifikat"
+        self.okolina_badge.setText(
+            f"  {'🧪' if self.demo_mode else '🚀'} {naziv}  ")
+        self.setWindowTitle(f"Fiskalizacija računa — {naziv}")
+        self.okolina_opis.setText(
+            "Računi se šalju u testno okruženje Porezne uprave (CIS DEMO), "
+            "bez pravnog učinka." if self.demo_mode else
+            "Računi se šalju u PRODUKCIJSKI sustav Porezne uprave i imaju "
+            "pravni učinak.")
+        self._stil_okoline(self.theme_manager.colors)
+
+    def _on_okolina_changed(self, indeks):
+        demo = indeks == 0
+        if demo == self._prikazani_demo:
+            return
+        if not demo:
+            odgovor = QMessageBox.question(
+                self, "Produkcija",
+                "Prebaciti na PRODUKCIJSKI certifikat?\n\n"
+                "Računi će se fiskalizirati u stvarnom sustavu Porezne uprave.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No)
+            if odgovor != QMessageBox.StandardButton.Yes:
+                self.okolina_combo.blockSignals(True)
+                self.okolina_combo.setCurrentIndex(0)
+                self.okolina_combo.blockSignals(False)
+                return
+        self._spremi_polja_profila()
+        self.demo_mode = demo
+        self._prikazani_demo = demo
+        self._ucitaj_polja_profila()
+        # stari certifikat ne smije ostati aktivan za novu okolinu
+        self.fiskalizacija = None
+        self.cert_status_label.setText("⚠️  Certifikat nije inicijaliziran")
+        self.cert_status_label.setStyleSheet(
+            f"color: {self.theme_manager.colors['warning']}; font-weight: bold;")
+        self.config["demo_mode"] = demo
+        spremi_config(self.config)
+        self._osvjezi_okolinu()
+        self.init_certifikat(silent=True)
 
     def on_pravna_osoba_changed(self):
         c = self.theme_manager.colors
@@ -2002,6 +2171,19 @@ class BillingApp(QWidget):
                                     f"Ključ nije pronađen:\n{key_path}")
             return
 
+        demo_cert = je_demo_certifikat(cert_path)
+        if demo_cert and not self.demo_mode:
+            self.fiskalizacija = None
+            self.cert_status_label.setText("❌ DEMO certifikat u produkciji")
+            self.cert_status_label.setStyleSheet(
+                f"color: {self.theme_manager.colors['danger_text']}; font-weight: bold;")
+            if not silent:
+                QMessageBox.warning(
+                    self, "Greška",
+                    "Odabran je PRODUKCIJSKI certifikat, a datoteka je DEMO "
+                    "certifikat. Odaberi pravi produkcijski certifikat.")
+            return
+
         try:
             self.fiskalizacija = Fiskalizacija(
                 cert_path=cert_path,
@@ -2012,15 +2194,12 @@ class BillingApp(QWidget):
             )
             okolina = "DEMO" if self.demo_mode else "PRODUKCIJA"
             self.cert_status_label.setText(f"✅ Certifikat aktivan ({okolina})")
+            if self.demo_mode and demo_cert is False:
+                self.cert_status_label.setText(
+                    "⚠️ Aktivan (DEMO), ali certifikat nije DEMO")
             self.cert_status_label.setStyleSheet(f"color: {self.theme_manager.colors['success']}; font-weight: bold;")
 
-            # Zatvori panel nakon uspješne inicijalizacije
-            self.cert_panel.setVisible(False)
-            self.toggle_cert_btn.setChecked(False)
-            self.toggle_cert_btn.setText("⚙️ Postavke")
-
-            self.config["cert_path"] = cert_path
-            self.config["key_path"] = key_path
+            self.config.update(self._cert_podaci())
             spremi_config(self.config)
 
             if not silent:
@@ -2044,11 +2223,11 @@ class BillingApp(QWidget):
             "iban": self.iban_input.text().strip(),
             "oznaka_pp": self.pp_input.text().strip(),
             "oznaka_nu": self.nu_input.text().strip(),
-            "cert_path": self.cert_path_input.text().strip(),
-            "key_path": self.key_path_input.text().strip(),
-            "key_password": self.key_password_input.text().strip(),
-            "demo_mode": self.demo_mode,
-            "operater": self.operater_input.text().strip()
+            "operater": self.operater_input.text().strip(),
+            "etsy_api_kljuc": self.etsy_kljuc_input.text().strip(),
+            "etsy_redirect": self.etsy_redirect_input.text().strip()
+            or etsy.ZADANI_REDIRECT,
+            **self._cert_podaci(),
         }
         self.config.update(data)
         spremi_config(self.config)
@@ -2347,6 +2526,12 @@ class BillingApp(QWidget):
             conn.commit()
             self._ponuda_izvor_id = None
 
+        # Ako je račun kreiran iz Etsy narudžbe — poveži narudžbu s računom
+        if self._etsy_izvor_id:
+            etsy.poveži_racun(conn, self._etsy_izvor_id, invoice_id)
+            self._etsy_izvor_id = None
+            self.etsy_widget.osvjezi()
+
         # Reset kupca i stavki
         self.kupac_naziv_input.clear()
         self.kupac_oib_input.clear()
@@ -2514,6 +2699,73 @@ class BillingApp(QWidget):
             f"Podaci iz ponude {br_ponude} učitani su u formu.\n"
             "Pregledajte, po potrebi doradite, pa kliknite 'Spremi i fiskaliziraj račun'.\n\n"
             "Status ponude bit će automatski ažuriran na 'Pretvoreno'.")
+
+    def _etsy_osvjezi_trgovine(self):
+        """Popuni popis povezanih Etsy trgovina u Postavkama."""
+        self.etsy_trgovine_combo.clear()
+        for sid, naziv in self.etsy_widget._povezane():
+            self.etsy_trgovine_combo.addItem(f"{naziv or 'Trgovina'} ({sid})", sid)
+        if self.etsy_trgovine_combo.count() == 0:
+            self.etsy_trgovine_combo.addItem("Nema povezanih trgovina", None)
+        self.etsy_odspoji_btn.setEnabled(self.etsy_trgovine_combo.currentData() is not None)
+
+    def _etsy_odspoji(self):
+        sid = self.etsy_trgovine_combo.currentData()
+        if sid is None:
+            return
+        if QMessageBox.question(
+                self, "Odspoji trgovinu",
+                f"Odspojiti trgovinu {self.etsy_trgovine_combo.currentText()}?\n\n"
+                "Aplikacija će zaboraviti prijavu i više neće dohvaćati njezine "
+                "narudžbe. Već dohvaćene narudžbe i izdani računi ostaju. Pristup "
+                "možeš opozvati i na Etsyju (Account → Apps).",
+        ) != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            self.etsy_widget.odspoji_trgovinu(sid)
+        except Exception as e:
+            QMessageBox.warning(self, "Etsy", str(e))
+            return
+        self._etsy_osvjezi_trgovine()
+
+    def _etsy_spremi_config(self, vrijednosti: dict):
+        self.config.update(vrijednosti)
+        spremi_config(self.config)
+
+    def prefill_from_etsy(self, racun: dict):
+        """Popunjava formu 'Novi račun' nacrtom iz Etsy narudžbe."""
+        self._tabs.setCurrentIndex(0)
+        self._ponuda_izvor_id = None
+        self.pravna_osoba_check.setChecked(False)
+        self.kupac_naziv_input.setText(racun.get('naziv_kupca', ''))
+        self.kupac_oib_input.setText(racun.get('oib_kupca', '') or '')
+        self.kupac_adresa_input.setText(racun.get('adresa_kupca', '') or '')
+        self.u_sustavu_pdv_check.setChecked(False)
+        self.on_pdv_changed()
+        # Etsy isplaćuje na bankovni račun: transakcijski račun, a u KPR ulazi
+        # tek kad se u Pregledu računa označi naplata (dan isplate)
+        self.nacin_placanja_combo.setCurrentText("T - Transakcijski račun")
+        self.on_nacin_placanja_changed()
+        self.datum_edit.setDate(QDate.currentDate())
+        self.rok_edit.setDate(QDate.currentDate())
+        self.napomena_input.setPlainText(racun.get('napomena', ''))
+        self.stavke_widget.tabla.setRowCount(0)
+        for s in racun['stavke']:
+            self.stavke_widget.dodaj_stavku()
+            row = self.stavke_widget.tabla.rowCount() - 1
+            self.stavke_widget.tabla.item(row, 0).setText(s['naziv'])
+            self.stavke_widget.tabla.item(row, 1).setText(str(s['kolicina']))
+            self.stavke_widget.tabla.item(row, 2).setText(s['jedinica'])
+            self.stavke_widget.tabla.item(row, 3).setText(fmt_iznos(float(s['cijena'])))
+            self.stavke_widget.tabla.item(row, 4).setText(fmt_iznos(0))
+        self.stavke_widget.azuriraj_ukupno()
+        self._etsy_izvor_id = racun['etsy_id']
+        QMessageBox.information(
+            self, "Etsy narudžba učitana",
+            f"Nacrt računa za Etsy narudžbu #{racun['etsy_id']} je u formi.\n"
+            "Pregledaj ga, pa klikni 'Spremi i fiskaliziraj račun'.\n\n"
+            "Račun je transakcijski: u KPR ulazi kad u Pregledu računa označiš "
+            "naplatu (dan kad je Etsy isplatio novac na račun).")
 
     def generate_pdf(self, invoice_id, broj_racuna_str, datum, rok_placanja, nacin_placanja,
                      oib, naziv_tvrtke, adresa, iban,
@@ -2716,12 +2968,16 @@ class BillingApp(QWidget):
             y -= 20
 
         # ── Ukupan iznos ─────────────────────────────────────────────────────
+        iznos_tekst = f"{fmt_iznos(ukupan_iznos)} EUR"
+        # kućica se širi prema duljini iznosa da se oznaka i iznos ne preklapaju
+        sirina = max(160, c.stringWidth("UKUPNO:", fn_b, 13)
+                     + c.stringWidth(iznos_tekst, fn_b, 13) + 40)
         c.setFillColorRGB(0.1, 0.1, 0.1)
-        c.rect(W - 200, y - 6, 160, 22, fill=1, stroke=0)
+        c.rect(W - 40 - sirina, y - 6, sirina, 22, fill=1, stroke=0)
         c.setFillColorRGB(1, 1, 1)
         c.setFont(fn_b, 13)
-        c.drawString(W - 195, y, "UKUPNO:")
-        c.drawRightString(W - 45, y, f"{fmt_iznos(ukupan_iznos)} EUR")
+        c.drawString(W - 35 - sirina, y, "UKUPNO:")
+        c.drawRightString(W - 45, y, iznos_tekst)
         c.setFillColorRGB(0, 0, 0)
         y -= 30
 

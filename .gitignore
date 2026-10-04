@@ -7,6 +7,8 @@ config.json
 # Podaci poslovanja
 *.db
 *.db-journal
+*.db.*
+*.bak
 invoice_*.pdf
 racun_*.pdf
 ponuda_*.pdf

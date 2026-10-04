@@ -23,30 +23,35 @@ PDV_OSLOBODENJE_TEKSTOVI = [
 # ključem "key_password" pa ostatak aplikacije radi kao i prije.
 KEYRING_SERVIS = "FiskalApp"
 KEYRING_KORISNIK = "lozinka_kljuca"
+KEYRING_KORISNIK_PROD = "lozinka_kljuca_produkcija"
+# ključ u config rječniku -> korisnik u keyringu (DEMO i PRODUKCIJSKI certifikat)
+LOZINKE = {"key_password": KEYRING_KORISNIK,
+           "prod_key_password": KEYRING_KORISNIK_PROD,
+           "etsy_api_kljuc": "etsy_api_kljuc"}
 
 
-def _keyring_dohvati():
+def _keyring_dohvati(korisnik=KEYRING_KORISNIK):
     """Lozinka iz Credential Managera; '' ako je nema, None ako je keyring
     nedostupan."""
     if keyring is None:
         return None
     try:
-        return keyring.get_password(KEYRING_SERVIS, KEYRING_KORISNIK) or ""
+        return keyring.get_password(KEYRING_SERVIS, korisnik) or ""
     except Exception as e:
         print(f"⚠️  Keyring nedostupan: {e}")
         return None
 
 
-def _keyring_spremi(lozinka):
+def _keyring_spremi(lozinka, korisnik=KEYRING_KORISNIK):
     """Sprema (ili briše, ako je prazna) i provjerava čitanjem. True = uspjelo."""
     if keyring is None:
         return False
     try:
         if lozinka:
-            keyring.set_password(KEYRING_SERVIS, KEYRING_KORISNIK, lozinka)
-            return keyring.get_password(KEYRING_SERVIS, KEYRING_KORISNIK) == lozinka
+            keyring.set_password(KEYRING_SERVIS, korisnik, lozinka)
+            return keyring.get_password(KEYRING_SERVIS, korisnik) == lozinka
         try:
-            keyring.delete_password(KEYRING_SERVIS, KEYRING_KORISNIK)
+            keyring.delete_password(KEYRING_SERVIS, korisnik)
         except Exception:
             pass                 # nije ni bila spremljena
         return True
@@ -71,9 +76,15 @@ def učitaj_config():
         "oznaka_nu": "1",
         "cert_path": "",
         "key_path": "",
-        "key_password": "",
-        "demo_mode": True,
+        "key_password": "",          # lozinka DEMO certifikata
+        "prod_cert_path": "",        # PRODUKCIJSKI certifikat
+        "prod_key_path": "",
+        "prod_key_password": "",
+        "demo_mode": True,           # True = aktivan DEMO certifikat
         "operater": "",
+        "etsy_api_kljuc": "",        # Etsy keystring (u Credential Manageru)
+        "etsy_redirect": "http://localhost:3003/callback",
+        "etsy_shop_id": "",
         "backup_mapa": ""      # prazno = mapa "backup" uz bazu; može biti npr. OneDrive
     }
     if os.path.exists(CONFIG_PATH):
@@ -85,30 +96,55 @@ def učitaj_config():
         except Exception as e:
             print(f"⚠️  Greška pri čitanju konfiguracije: {e}")
 
-    # Lozinku ključa čuvamo u keyringu, ne u config.json.
-    if keyring is None:
-        if defaults.get("key_password"):
-            print("⚠️  keyring nije instaliran (pip install keyring): lozinka "
-                  "ključa ostaje u config.json")
-    elif defaults.get("key_password"):
-        # stari način: premjesti u keyring, a iz datoteke makni tek kad je
-        # spremanje potvrđeno čitanjem
-        if _keyring_spremi(defaults["key_password"]):
-            _zapisi_config({**defaults, "key_password": ""})
-            print("🔐 Lozinka ključa premještena u Windows Credential Manager")
-    else:
-        iz_keyringa = _keyring_dohvati()
-        if iz_keyringa:
-            defaults["key_password"] = iz_keyringa
+    # Lozinke ključeva čuvamo u keyringu, ne u config.json.
+    premjesteno = {}
+    for kljuc, korisnik in LOZINKE.items():
+        if keyring is None:
+            if defaults.get(kljuc):
+                print("⚠️  keyring nije instaliran (pip install keyring): lozinka "
+                      "ključa ostaje u config.json")
+        elif defaults.get(kljuc):
+            # stari način: premjesti u keyring, a iz datoteke makni tek kad je
+            # spremanje potvrđeno čitanjem
+            if _keyring_spremi(defaults[kljuc], korisnik):
+                premjesteno[kljuc] = ""
+                _zapisi_config({**defaults, **premjesteno})
+                print("🔐 Lozinka ključa premještena u Windows Credential Manager")
+        else:
+            iz_keyringa = _keyring_dohvati(korisnik)
+            if iz_keyringa:
+                defaults[kljuc] = iz_keyringa
     return defaults
 
 def spremi_config(data):
     """Sprema konfiguraciju u JSON datoteku."""
     try:
         zapis = dict(data)
-        if keyring is not None and _keyring_spremi(zapis.get("key_password", "")):
-            zapis["key_password"] = ""        # lozinka je u keyringu
+        for kljuc, korisnik in LOZINKE.items():
+            if (keyring is not None and kljuc in zapis
+                    and _keyring_spremi(zapis.get(kljuc, ""), korisnik)):
+                zapis[kljuc] = ""             # lozinka je u keyringu
         _zapisi_config(zapis)
         print(f"✅ Konfiguracija spremljena u {CONFIG_PATH}")
     except Exception as e:
         print(f"⚠️  Greška pri spremanju konfiguracije: {e}")
+
+
+def certifikat_okoline(config, demo):
+    """(cert_path, key_path, lozinka) certifikata za DEMO ili PRODUKCIJU."""
+    pref = "" if demo else "prod_"
+    return (config.get(pref + "cert_path", ""),
+            config.get(pref + "key_path", ""),
+            config.get(pref + "key_password", ""))
+
+
+def je_demo_certifikat(cert_path):
+    """True/False prema izdavatelju certifikata (FINA Demo CA), None ako se
+    ne može pročitati."""
+    try:
+        from cryptography import x509
+        with open(cert_path, "rb") as f:
+            cert = x509.load_pem_x509_certificate(f.read())
+        return "demo" in cert.issuer.rfc4514_string().lower()
+    except Exception:
+        return None

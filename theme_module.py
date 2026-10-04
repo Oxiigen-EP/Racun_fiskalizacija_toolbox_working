@@ -116,6 +116,7 @@ def _build_stylesheet(c: dict, checkmark_path: str) -> str:
         }}
         QGroupBox QWidget {{ background-color: transparent; }}
         QGroupBox QLabel  {{ background-color: transparent; }}
+        QGroupBox QPushButton {{ background-color: {c['accent']}; }}
         QLineEdit, QTextEdit, QDateEdit, QComboBox {{
             border: 1px solid {c['border']};
             border-radius: 5px; padding: 5px 8px;

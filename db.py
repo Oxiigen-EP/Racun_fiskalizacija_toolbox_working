@@ -7,6 +7,8 @@ from datetime import datetime
 
 from arhiva_util import napravi_backup
 from kpr_module import inicijaliziraj_kpr_tablicu, migriraj_naplatu
+from posd import inicijaliziraj_posd
+from etsy import inicijaliziraj_etsy
 from ponude_module import inicijaliziraj_ponude_tablice
 
 # Stupci dodani naknadno; stare baze ih dobiju migracijom (ALTER TABLE).
@@ -164,6 +166,8 @@ def inicijaliziraj_shemu(conn, cursor):
     conn.commit()
     inicijaliziraj_ponude_tablice(conn, cursor)
     migriraj_na_cente(conn, cursor)
+    inicijaliziraj_posd(conn, cursor)
+    inicijaliziraj_etsy(conn, cursor)
     for sql in _INDEKSI:
         _pokusaj(cursor, sql)     # vrlo stara baza može nemati neki stupac
     conn.commit()

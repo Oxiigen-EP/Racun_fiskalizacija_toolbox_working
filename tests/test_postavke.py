@@ -82,3 +82,38 @@ def test_neuspjelo_spremanje_ne_brise_lozinku_iz_datoteke(okolina, monkeypatch):
     c = postavke.učitaj_config()
     assert c["key_password"] == "tajna"
     assert json.loads(cfg.read_text())["key_password"] == "tajna"
+
+
+def test_demo_i_produkcijska_lozinka_odvojene(okolina):
+    kr, cfg = okolina
+    postavke.spremi_config({"key_password": "demo-l", "prod_key_password": "prod-l"})
+    tekst = cfg.read_text()
+    assert "demo-l" not in tekst and "prod-l" not in tekst
+    c = postavke.učitaj_config()
+    assert c["key_password"] == "demo-l"
+    assert c["prod_key_password"] == "prod-l"
+    assert kr.podaci[(postavke.KEYRING_SERVIS, postavke.KEYRING_KORISNIK_PROD)] == "prod-l"
+
+
+def test_stare_lozinke_obje_se_premjestaju(okolina):
+    kr, cfg = okolina
+    cfg.write_text(json.dumps({"key_password": "a", "prod_key_password": "b"}))
+    postavke.učitaj_config()
+    tekst = cfg.read_text()
+    assert '"a"' not in tekst and '"b"' not in tekst
+    assert len(kr.podaci) == 2
+
+
+def test_certifikat_okoline():
+    c = {"cert_path": "d.pem", "key_path": "dk.pem", "key_password": "x",
+         "prod_cert_path": "p.pem", "prod_key_path": "pk.pem",
+         "prod_key_password": "y"}
+    assert postavke.certifikat_okoline(c, True) == ("d.pem", "dk.pem", "x")
+    assert postavke.certifikat_okoline(c, False) == ("p.pem", "pk.pem", "y")
+    assert postavke.certifikat_okoline({}, False) == ("", "", "")
+
+
+def test_je_demo_certifikat(tmp_path, testni_certifikat):
+    assert postavke.je_demo_certifikat(str(tmp_path / "nema.pem")) is None
+    cert = testni_certifikat[0] if isinstance(testni_certifikat, tuple) else testni_certifikat
+    assert postavke.je_demo_certifikat(str(cert)) in (True, False)
