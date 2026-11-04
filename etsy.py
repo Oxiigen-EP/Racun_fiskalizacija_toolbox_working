@@ -8,6 +8,7 @@ nakon spremanja i fiskalizacije narudžba dobiva status 'racun' i invoice_id.
 import base64
 import hashlib
 import json
+import re
 import secrets
 import threading
 import time
@@ -22,7 +23,7 @@ API_URL = "https://openapi.etsy.com/v3/application"
 AUTH_URL = "https://www.etsy.com/oauth/connect"
 TOKEN_URL = "https://api.etsy.com/v3/public/oauth/token"
 ZADANI_REDIRECT = "http://localhost:3003/callback"
-SCOPE = "transactions_r shops_r"
+SCOPE = "transactions_r shops_r"   # transactions_r pokriva i ledger-entries
 KEYRING_TOKENI = "etsy_tokeni"
 NASA_VALUTA = "EUR"
 
@@ -54,6 +55,18 @@ def inicijaliziraj_etsy(conn, cursor=None):
     kolone = {r[1] for r in conn.execute("PRAGMA table_info(etsy_narudzbe)")}
     if "shop_id" not in kolone:
         conn.execute("ALTER TABLE etsy_narudzbe ADD COLUMN shop_id INTEGER")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS etsy_naknade (
+            entry_id   INTEGER PRIMARY KEY,
+            shop_id    INTEGER,
+            datum      TEXT,
+            tip        TEXT,
+            opis       TEXT,
+            iznos_cent INTEGER,
+            valuta     TEXT,
+            kategorija TEXT,
+            uvezeno    TEXT
+        )""")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS etsy_trgovine (
             shop_id INTEGER PRIMARY KEY,
@@ -121,6 +134,94 @@ def _datum(receipt):
     if not ts:
         return ""
     return datetime.fromtimestamp(int(ts)).strftime("%d.%m.%Y")
+
+
+# ── Naknade (Etsy ledger) ────────────────────────────────────────────────────
+
+KATEGORIJE_NAKNADA = (("listing", "Listing Fees"), ("transaction", "Transaction Fees"),
+                      ("renew", "Renew Sold Fees"),
+                      ("renew_expired", "Renew Expired Fees"), ("ads", "Etsy Ads Fees"),
+                      ("processing", "Processing Fees"))
+
+
+# Točni tipovi stavki koje Etsy vraća u ledgeru (potvrđeno na stvarnim podacima).
+_TIPOVI_NAKNADA = {
+    "listing": "listing", "listing_refund": "listing",
+    "transaction": "transaction",
+    "renew_sold_auto": "renew", "renew_sold": "renew",
+    "auto_renew_expired": "renew_expired", "renew_expired": "renew_expired",
+    "prolist": "ads",
+    "payment_processing_fee": "processing",
+}
+
+
+def kategorija_naknade(tip, opis):
+    """Razvrstava stavku Etsy računa u kategoriju kao na Etsyjevoj fakturi
+    (None = nije naknada koju prepoznajemo: prodaja, isplata, porez na promet...)."""
+    tip_l = (tip or "").strip().lower()
+    if tip_l in _TIPOVI_NAKNADA:
+        return _TIPOVI_NAKNADA[tip_l]
+    t = f"{tip_l} {(opis or '').lower()}"
+    if "renew" in t:
+        return "renew_expired" if "expired" in t else "renew"
+    if "processing" in t:
+        return "processing"
+    if "transaction fee" in t or ("transaction" in t and "fee" in t):
+        return "transaction"
+    if re.search(r"\bads?\b|advertis|offsite|prolist", t):
+        return "ads"
+    if "listing" in t and "fee" in t:
+        return "listing"
+    return None
+
+
+def spremi_naknade(conn, unosi, shop_id):
+    """Upisuje stavke Etsy ledgera (već postojeće preskače). Vraća broj novih.
+    Iznos Etsy vraća u najmanjoj jedinici valute (npr. centi)."""
+    novih = 0
+    sad = datetime.now().isoformat(timespec="seconds")
+    for u in unosi:
+        if u.get("entry_id") is None:
+            continue
+        ts = u.get("create_date")
+        datum = datetime.fromtimestamp(ts).strftime("%Y-%m-%d") if ts else ""
+        tip = str(u.get("ledger_type") or "")
+        opis = str(u.get("description") or "")
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO etsy_naknade (entry_id, shop_id, datum, tip, opis, "
+            "iznos_cent, valuta, kategorija, uvezeno) VALUES (?,?,?,?,?,?,?,?,?)",
+            (int(u["entry_id"]), int(shop_id), datum, tip, opis,
+             int(u.get("amount") or 0), u.get("currency") or "",
+             kategorija_naknade(tip, opis), sad))
+        novih += cur.rowcount
+    conn.commit()
+    return novih
+
+
+def naknade_mjeseca(conn, mjesec, shop_id=None):
+    """mjesec = 'YYYY-MM'. Vraća {'kategorije': {kat: cent}, 'ukupno': cent,
+    'valute': [..], 'stavke': [...]}. Trošak je apsolutni zbroj po kategoriji
+    (Etsy vodi naknade kao terećenja)."""
+    sql = ("SELECT entry_id, shop_id, datum, tip, opis, iznos_cent, valuta, kategorija "
+           "FROM etsy_naknade WHERE substr(datum,1,7)=?")
+    par = [mjesec]
+    if shop_id:
+        sql += " AND shop_id=?"
+        par.append(int(shop_id))
+    sql += " ORDER BY datum, entry_id"
+    kl = ("entry_id", "shop_id", "datum", "tip", "opis", "iznos_cent", "valuta",
+          "kategorija")
+    stavke = [dict(zip(kl, r)) for r in conn.execute(sql, par)]
+    zbrojevi = {k: 0 for k, _ in KATEGORIJE_NAKNADA}
+    valute = set()
+    for st in stavke:
+        st["kategorija"] = kategorija_naknade(st["tip"], st["opis"])
+        if st["kategorija"]:
+            zbrojevi[st["kategorija"]] += st["iznos_cent"]
+            valute.add(st["valuta"])
+    kategorije = {k: abs(v) for k, v in zbrojevi.items()}
+    return {"kategorije": kategorije, "ukupno": sum(kategorije.values()),
+            "valute": sorted(valute), "stavke": stavke}
 
 
 def odspoji_tokene(raw, shop_id, stari_shop_id=None):
@@ -493,6 +594,19 @@ class EtsyKlijent:
             js = self._get(f"/shops/{shop_id}/receipts", {
                 "was_paid": "true", "min_created": od, "limit": 100,
                 "offset": offset})
+            stranica = js.get("results", [])
+            sve.extend(stranica)
+            offset += len(stranica)
+            if not stranica or offset >= js.get("count", 0):
+                return sve
+
+    def ledger_unosi(self, shop_id, od, do):
+        """Stavke računa plaćanja (naknade, uplate...) u razdoblju [od, do] (datetime)."""
+        sve, offset = [], 0
+        while True:
+            js = self._get(f"/shops/{shop_id}/payment-account/ledger-entries", {
+                "min_created": int(od.timestamp()), "max_created": int(do.timestamp()),
+                "limit": 100, "offset": offset})
             stranica = js.get("results", [])
             sve.extend(stranica)
             offset += len(stranica)

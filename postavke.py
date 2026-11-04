@@ -85,6 +85,10 @@ def učitaj_config():
         "etsy_api_kljuc": "",        # Etsy keystring (u Credential Manageru)
         "etsy_redirect": "http://localhost:3003/callback",
         "etsy_shop_id": "",
+        "pdv_ispostava": "3532",         # 4-znamenkasta šifra ispostave Porezne uprave
+        "etsy_pdv_id": "9777587C",           # PDV ID Etsy Ireland (bez 'IE')
+        "pdv_odbija_pretporez": False,
+        "pdv_generirano": {},        # {"2026-08": {"PDV": "datum", "PDV-S": "datum"}}
         "backup_mapa": ""      # prazno = mapa "backup" uz bazu; može biti npr. OneDrive
     }
     if os.path.exists(CONFIG_PATH):

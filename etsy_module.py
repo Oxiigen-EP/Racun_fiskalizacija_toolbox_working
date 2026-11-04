@@ -1,7 +1,9 @@
 """Tab Etsy: plaćene narudžbe s Etsyja i izdavanje računa za svaku od njih."""
 import json
+from datetime import datetime, timedelta
 
 from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtGui import QBrush, QColor, QFont
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QComboBox,
     QTableWidget, QTableWidgetItem, QHeaderView, QMessageBox, QInputDialog,
@@ -72,6 +74,10 @@ class EtsyWidget(QWidget):
         self.povezi_btn = QPushButton("🔗  Dodaj / poveži trgovinu")
         self.povezi_btn.clicked.connect(self.povezi)
         gore.addWidget(self.povezi_btn)
+        self.naknade_btn = QPushButton("💶  Naknade")
+        self.naknade_btn.setToolTip("Mjesečne Etsy naknade (za usporedbu s Etsy fakturom)")
+        self.naknade_btn.clicked.connect(self.naknade)
+        gore.addWidget(self.naknade_btn)
         self.dohvati_btn = QPushButton("🔄  Dohvati narudžbe")
         self.dohvati_btn.clicked.connect(self.dohvati)
         gore.addWidget(self.dohvati_btn)
@@ -203,7 +209,7 @@ class EtsyWidget(QWidget):
         self._radnik.start()
 
     def _zauzeto(self, da):
-        for b in (self.povezi_btn, self.dohvati_btn):
+        for b in (self.povezi_btn, self.dohvati_btn, self.naknade_btn):
             b.setEnabled(not da)
         if da:
             self.status_label.setText("⏳ Komunikacija s Etsyjem…")
@@ -318,6 +324,9 @@ class EtsyWidget(QWidget):
             if greske:
                 self._greska("Dohvat nije uspio za:\n" + "\n".join(greske))
         self._pokreni(posao, uspjeh)
+
+    def naknade(self, _=None):
+        NaknadeDijalog(self).exec()
 
     # ── popis ────────────────────────────────────────────────────────────────
 
@@ -463,3 +472,184 @@ class EtsyWidget(QWidget):
             if odgovor != QMessageBox.StandardButton.Yes:
                 return
         self.izdaj_racun.emit(racun)
+
+
+class NaknadeDijalog(QDialog):
+    """Mjesečne Etsy naknade: dohvat iz Etsyja i zbroj po kategorijama."""
+
+    def __init__(self, widget):
+        super().__init__(widget)
+        self._w = widget
+        self._radnik = None
+        self.setWindowTitle("Etsy naknade")
+        self.resize(760, 560)
+        lay = QVBoxLayout(self)
+
+        red = QHBoxLayout()
+        red.addWidget(QLabel("Mjesec:"))
+        self.mjesec_combo = QComboBox()
+        d = datetime.now().replace(day=1)
+        for _ in range(18):
+            self.mjesec_combo.addItem(d.strftime("%m.%Y."), d.strftime("%Y-%m"))
+            d = (d - timedelta(days=1)).replace(day=1)
+        self._oznaci_mjesece()
+        self.mjesec_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        self.mjesec_combo.setMinimumContentsLength(22)
+        self.mjesec_combo.setCurrentIndex(1)       # prošli mjesec
+        self.mjesec_combo.currentIndexChanged.connect(self.prikazi)
+        red.addWidget(self.mjesec_combo)
+        red.addWidget(QLabel("Trgovina:"))
+        self.trg_combo = QComboBox()
+        self.trg_combo.addItem("Sve trgovine", None)
+        for sid, naziv in widget._povezane():
+            self.trg_combo.addItem(naziv or str(sid), sid)
+        self.trg_combo.currentIndexChanged.connect(self.prikazi)
+        red.addWidget(self.trg_combo)
+        red.addStretch()
+        self.dohvati_btn = QPushButton("🔄  Dohvati iz Etsyja")
+        self.dohvati_btn.clicked.connect(self.dohvati)
+        red.addWidget(self.dohvati_btn)
+        self.pdv_btn = QPushButton("📄  PDV i PDV-S…")
+        self.pdv_btn.clicked.connect(self.pdv_obrasci)
+        red.addWidget(self.pdv_btn)
+        lay.addLayout(red)
+
+        self.zbroj = QTableWidget(0, 2)
+        self.zbroj.setHorizontalHeaderLabels(["Naknada", "Iznos"])
+        self.zbroj.verticalHeader().setVisible(False)
+        self.zbroj.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.zbroj.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.zbroj.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        lay.addWidget(self.zbroj)
+
+        self.stavke = QTableWidget(0, 5)
+        self.stavke.setHorizontalHeaderLabels(
+            ["Datum", "Tip", "Opis", "Kategorija", "Iznos"])
+        self.stavke.verticalHeader().setVisible(False)
+        self.stavke.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.stavke.horizontalHeader().setSectionResizeMode(
+            2, QHeaderView.ResizeMode.Stretch)
+        self.stavke_btn = QPushButton("▸  Prikaži pojedinačne stavke")
+        self.stavke_btn.setCheckable(True)
+        self.stavke_btn.toggled.connect(self._prebaci_stavke)
+        lay.addWidget(self.stavke_btn)
+        self.stavke.setVisible(False)
+        lay.addWidget(self.stavke, 2)
+
+        self.info = QLabel("")
+        self.info.setWordWrap(True)
+        self.info.setStyleSheet("color: gray; font-size: 11px;")
+        lay.addWidget(self.info)
+        self.prikazi()
+
+    def _prebaci_stavke(self, prikazi):
+        self.stavke.setVisible(prikazi)
+        self.stavke_btn.setText(("▾  Sakrij" if prikazi else "▸  Prikaži")
+                                + " pojedinačne stavke")
+
+    def _trgovine(self):
+        odabrana = self.trg_combo.currentData()
+        povezane = self._w._povezane()
+        return [p for p in povezane if not odabrana or p[0] == odabrana]
+
+    def dohvati(self, _=None):
+        trgovine = self._trgovine()
+        if not trgovine:
+            QMessageBox.warning(self, "Etsy", "Nema povezane trgovine.")
+            return
+        try:
+            klijenti = [(sid, self._w._klijent(sid)) for sid, _ in trgovine]
+        except etsy.EtsyGreska as e:
+            QMessageBox.warning(self, "Etsy", str(e))
+            return
+        g, mj = (int(x) for x in self.mjesec_combo.currentData().split("-"))
+        od = datetime(g, mj, 1)
+        do = (datetime(g + (mj == 12), mj % 12 + 1, 1) - timedelta(seconds=1))
+
+        def posao():
+            return [(sid, k.ledger_unosi(sid, od, do)) for sid, k in klijenti]
+
+        def uspjeh(rezultat):
+            novih = sum(etsy.spremi_naknade(self._w._conn, unosi, sid)
+                        for sid, unosi in rezultat)
+            self.prikazi()
+            self.info.setText(self.info.text() + f"\nDohvaćeno novih stavki: {novih}.")
+
+        def greska(poruka):
+            QMessageBox.warning(self, "Etsy", poruka)
+
+        if self._w._sinkrono:
+            try:
+                uspjeh(posao())
+            except etsy.EtsyGreska as e:
+                greska(str(e))
+            return
+        self._radnik = Radnik(posao, self)
+        self._radnik.gotovo.connect(uspjeh)
+        self._radnik.greska.connect(greska)
+        self._radnik.finished.connect(lambda: self.dohvati_btn.setEnabled(True))
+        self.dohvati_btn.setEnabled(False)
+        self._radnik.start()
+
+    def _oznaci_mjesece(self):
+        from pdv_module import generirano
+        cfg = self._w._cfg()
+        for i in range(self.mjesec_combo.count()):
+            mj = self.mjesec_combo.itemData(i)
+            g = generirano(cfg, mj)
+            tekst = f"{mj[5:]}.{mj[:4]}."
+            if g:
+                tekst += "  ✔ " + ", ".join(t for t in ("PDV", "PDV-S") if t in g)
+            self.mjesec_combo.setItemText(i, tekst)
+
+    def pdv_obrasci(self, _=None):
+        from pdv_module import PdvDijalog
+        r = etsy.naknade_mjeseca(self._w._conn, self.mjesec_combo.currentData(),
+                                 self.trg_combo.currentData())
+        PdvDijalog(self._w, self.mjesec_combo.currentData(), r["ukupno"], self).exec()
+        self._oznaci_mjesece()
+
+    def prikazi(self, _=None):
+        r = etsy.naknade_mjeseca(self._w._conn, self.mjesec_combo.currentData(),
+                                 self.trg_combo.currentData())
+        valuta = "/".join(r["valute"]) or "EUR"
+        self.zbroj.setRowCount(0)
+        redovi = [(naziv, r["kategorije"][k]) for k, naziv in etsy.KATEGORIJE_NAKNADA]
+        redovi.append(("Ukupno", r["ukupno"]))
+        for naziv, cent in redovi:
+            i = self.zbroj.rowCount()
+            self.zbroj.insertRow(i)
+            self.zbroj.setItem(i, 0, QTableWidgetItem(naziv))
+            it = QTableWidgetItem(f"{fmt_iznos(iz_centi(cent))} {valuta}")
+            it.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            self.zbroj.setItem(i, 1, it)
+            if naziv == "Ukupno":
+                for j in (0, 1):
+                    c = self.zbroj.item(i, j)
+                    f = QFont(c.font())
+                    f.setBold(True)
+                    f.setPointSize(f.pointSize() + 2)
+                    c.setFont(f)
+                    c.setBackground(QBrush(QColor("#1e7d4a")))
+                    c.setForeground(QBrush(QColor("white")))
+        self.zbroj.setFixedHeight(self.zbroj.horizontalHeader().height()
+                                  + self.zbroj.rowCount() * self.zbroj.verticalHeader().defaultSectionSize() + 4)
+        self.stavke.setRowCount(0)
+        nazivi = dict(etsy.KATEGORIJE_NAKNADA)
+        for st in r["stavke"]:
+            i = self.stavke.rowCount()
+            self.stavke.insertRow(i)
+            iznos = f"{fmt_iznos(iz_centi(st['iznos_cent']))} {st['valuta']}"
+            for j, t in enumerate((st["datum"], st["tip"], st["opis"],
+                                   nazivi.get(st["kategorija"], "—"), iznos)):
+                it = QTableWidgetItem(t)
+                if j == 4:
+                    it.setTextAlignment(Qt.AlignmentFlag.AlignRight |
+                                        Qt.AlignmentFlag.AlignVCenter)
+                self.stavke.setItem(i, j, it)
+        if len(r["valute"]) > 1:
+            self.info.setText("⚠️ Stavke su u više valuta. Zbroj nije pouzdan.")
+        else:
+            self.info.setText(
+                "Usporedi zbroj s Etsy fakturom za taj mjesec. Faktura je u EUR; "
+                "ako se razlikuje, provjeri stavke s '—' (nisu uračunate).")

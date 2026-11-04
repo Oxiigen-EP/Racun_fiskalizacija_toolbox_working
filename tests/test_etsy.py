@@ -366,3 +366,99 @@ def test_tokeni_trgovina_migracija_starog_oblika():
     novi = json.dumps({"11": {"tokeni": {"access_token": "a"}}})
     assert etsy.tokeni_trgovina(novi) == json.loads(novi)
     assert etsy.tokeni_trgovina("ne json") == {}
+
+
+def test_odspoji_tokene_brise_samo_odabranu_trgovinu():
+    raw = json.dumps({"11": {"tokeni": {"access_token": "a"}},
+                      "22": {"tokeni": {"access_token": "b"}}})
+    ostalo = json.loads(etsy.odspoji_tokene(raw, 11))
+    assert list(ostalo) == ["22"]
+    assert json.loads(etsy.odspoji_tokene(raw, 999)) == json.loads(raw)
+    stari = json.dumps({"access_token": "a"})
+    assert json.loads(etsy.odspoji_tokene(stari, 11, 11)) == {}
+
+
+# ── Naknade (ledger) ─────────────────────────────────────────────────────────
+from datetime import datetime as _dt
+
+
+def _unos(i, opis, iznos, dan=10, tip="fee"):
+    ts = int(_dt(2025, 8, dan, 12).timestamp())
+    return {"entry_id": i, "ledger_type": tip, "description": opis, "amount": iznos,
+            "currency": "EUR", "create_date": ts}
+
+
+KOLOVOZ = [_unos(1, "Listing fee", -17), _unos(2, "Listing fee", -17),
+           _unos(3, "Transaction fee: Drvena figurica", -717),
+           _unos(4, "Renew sold", -17, tip="renew_sold"), _unos(5, "Renew sold", -51),
+           _unos(6, "Processing fee", -558), _unos(7, "Payment for order", 4050, tip="payment"),
+           _unos(8, "Deposit to bank", -4000, tip="deposit")]
+
+
+def test_kategorija_naknade():
+    k = etsy.kategorija_naknade
+    assert k("fee", "Listing fee") == "listing"
+    assert k("", "Transaction fee: x") == "transaction"
+    assert k("", "Renew sold") == "renew"
+    assert k("", "Processing fee") == "processing"
+    assert k("", "Renew expired listing") == "renew_expired"
+    assert k("", "Etsy Ads") == "ads"
+    assert k("", "Offsite Ads fee") == "ads"
+    assert k("", "Transaction fee: Heads sign") == "transaction"
+    assert k("payment", "Payment for order") is None
+    assert k("deposit", "Deposit to bank") is None
+
+
+def test_naknade_mjeseca_zbroj_po_kategorijama(conn):
+    assert etsy.spremi_naknade(conn, KOLOVOZ, 11) == 8
+    assert etsy.spremi_naknade(conn, KOLOVOZ, 11) == 0          # bez duplikata
+    r = etsy.naknade_mjeseca(conn, "2025-08")
+    assert r["kategorije"] == {"listing": 34, "transaction": 717, "renew": 68,
+                               "renew_expired": 0, "ads": 0, "processing": 558}
+    assert r["ukupno"] == 1377                                  # EUR 13,77 kao na fakturi
+    assert r["valute"] == ["EUR"]
+    assert etsy.naknade_mjeseca(conn, "2025-07")["ukupno"] == 0
+    assert etsy.naknade_mjeseca(conn, "2025-08", shop_id=99)["ukupno"] == 0
+
+
+def test_ledger_unosi_straniči_i_salje_razdoblje():
+    s = LazniSession([Odg(200, {"count": 3, "results": [{"entry_id": 1}, {"entry_id": 2}]}),
+                      Odg(200, {"count": 3, "results": [{"entry_id": 3}]})])
+    k = klijent(s)
+    unosi = k.ledger_unosi(5, _dt(2025, 8, 1), _dt(2025, 8, 31, 23, 59, 59))
+    assert [u["entry_id"] for u in unosi] == [1, 2, 3]
+    url, kw = s.pozivi[0][1], s.pozivi[0][2]
+    assert url.endswith("/shops/5/payment-account/ledger-entries")
+    assert kw["params"]["min_created"] < kw["params"]["max_created"]
+    assert s.pozivi[1][2]["params"]["offset"] == 2
+
+
+def test_naknade_kolovoz_2026_s_etsy_ads(conn):
+    """Faktura 08/2026: ukupno EUR 30,75 (Etsy zaokružuje po stavci, razlika 1 cent)."""
+    ts = int(_dt(2026, 8, 15, 12).timestamp())
+    def u(i, opis, c):
+        return {"entry_id": i, "ledger_type": "fee", "description": opis, "amount": -c,
+                "currency": "EUR", "create_date": ts}
+    etsy.spremi_naknade(conn, [u(1, "Listing fee", 68), u(2, "Listing fee", 16),
+                               u(3, "Transaction fee", 806), u(4, "Renew sold", 85),
+                               u(5, "Etsy Ads", 1453), u(6, "Processing fee", 646)], 7)
+    r = etsy.naknade_mjeseca(conn, "2026-08")
+    assert r["kategorije"] == {"listing": 84, "transaction": 806, "renew": 85,
+                               "renew_expired": 0, "ads": 1453, "processing": 646}
+    assert abs(r["ukupno"] - 3075) <= 1
+
+
+def test_naknade_s_renew_expired(conn):
+    """Faktura s Renew Expired: ukupno EUR 52,63."""
+    ts = int(_dt(2026, 9, 15, 12).timestamp())
+    def u(i, opis, c):
+        return {"entry_id": i, "ledger_type": "fee", "description": opis, "amount": -c,
+                "currency": "EUR", "create_date": ts}
+    stavke = [("Listing fee", 216), ("Listing fee", 13), ("Transaction fee", 1471),
+              ("Renew expired", 180), ("Renew expired", 9), ("Renew sold", 108),
+              ("Renew sold", 12), ("Etsy Ads", 2116), ("Processing fee", 1138)]
+    etsy.spremi_naknade(conn, [u(i, o, c) for i, (o, c) in enumerate(stavke, 1)], 7)
+    r = etsy.naknade_mjeseca(conn, "2026-09")
+    assert r["kategorije"] == {"listing": 229, "transaction": 1471, "renew": 120,
+                               "renew_expired": 189, "ads": 2116, "processing": 1138}
+    assert r["ukupno"] == 5263
