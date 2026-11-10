@@ -8,6 +8,8 @@ Testovi: `python -m pytest tests`
 |---|---|
 | `main.py` | glavni ekran (PySide6): račun, pregled, kupci, PDF |
 | `fiskalizacija.py` | CIS: ZKI, potpis XML-a (RSA-SHA256), slanje, QR kod – bez UI-ja |
+| `eracun_fisk.py` | Fiskalizacija 2.0: EvidentirajERacun, naplata, odbijanje, isporuka bez eRačuna, eOvlaštenja; XAdES-B potpis, SOAP, TLS ≥ 1.2 |
+| `eracun_tok.py` | račun iz baze -> eRačun -> Porezna -> status u bazi (stupci `eracun_*`) |
 | `db.py` | shema, migracije, backup, brojač računa, kupci – bez UI-ja |
 | `novac.py` | sav novčani izračun (Decimal, cent po stavci, popust, PDV) |
 | `postavke.py` | `config.json`, putanje, tekstovi oslobođenja od PDV-a |
@@ -25,3 +27,13 @@ Tag `pred-refaktor` je stanje neposredno prije ovog preuređenja.
 - Iznosi se uvijek računaju kroz `novac.py`, nikad izravno u floatu.
 - Moduli ne smiju uvoziti iz `main.py`; bazu dohvaćaju preko `db.conn`.
 - Tajne (`config.json`, `cert/*.p12|pem`, `billing.db`) nikad u git.
+
+## Fiskalizacija 2.0 (eRačun, od 1. 1. 2027.)
+Uključuje se u `config.json`: `"eracun_fiskalizacija": true`. Tada se račun izdan
+pravnoj osobi (kvačica "Pravna osoba") šalje Poreznoj kao izlazni eRačun, a status
+(✅ / ⚠️) piše u pregledu računa; neuspjeli se šalju gumbom "Pošalji ponovno".
+Dodatne postavke: `eracun_kpd` (KPD oznaka artikla), `eracun_ca` (CA datoteka za TLS
+testne okoline), `fisk2_xsd` (XSD s portala Porezne za provjeru prije slanja).
+Specifikacija: "Tehnička specifikacija – Fiskalizacija eRačuna i eIzvještavanje" (v1.15).
+Ne šalji eRačun ovdje ako ga već fiskalizira informacijski posrednik (greška S008).
+

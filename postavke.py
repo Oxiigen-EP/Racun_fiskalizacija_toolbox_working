@@ -87,6 +87,11 @@ def učitaj_config():
         "etsy_shop_id": "",
         "pdv_ispostava": "3532",         # 4-znamenkasta šifra ispostave Porezne uprave
         "etsy_pdv_id": "9777587C",           # PDV ID Etsy Ireland (bez 'IE')
+        "eracun_fiskalizacija": False,   # Fiskalizacija 2.0: B2B račun šalje se kao eRačun
+        "eracun_kpd": "",            # zadana KPD oznaka artikla (npr. 62.01.11)
+        "eracun_ca": "",             # CA datoteka za TLS test okoline (prazno = bez provjere u testu)
+        "eracun_url": "",            # adresa servisa Fiskalizacije 2.0 (prazno = zadana)
+        "fisk2_xsd": "",             # neobavezno: XSD eFiskalizacije za provjeru prije slanja
         "pdv_odbija_pretporez": False,
         "pdv_generirano": {},        # {"2026-08": {"PDV": "datum", "PDV-S": "datum"}}
         "backup_mapa": ""      # prazno = mapa "backup" uz bazu; može biti npr. OneDrive

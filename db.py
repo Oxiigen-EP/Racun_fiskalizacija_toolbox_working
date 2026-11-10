@@ -22,6 +22,12 @@ _MIGRACIJE_FISKALIZACIJA = [
     "ALTER TABLE invoices ADD COLUMN vrijeme_izdavanja TEXT",
     "ALTER TABLE invoices ADD COLUMN greska_fisk TEXT",
     "ALTER TABLE invoices ADD COLUMN pokusaja INTEGER DEFAULT 0",
+    # Fiskalizacija 2.0 (eRačun): NULL = nije slano, 'poslan' ili 'greska'
+    "ALTER TABLE invoices ADD COLUMN eracun_status TEXT",
+    "ALTER TABLE invoices ADD COLUMN eracun_naplata_status TEXT",
+    "ALTER TABLE invoices ADD COLUMN eracun_naplata_greska TEXT",
+    "ALTER TABLE invoices ADD COLUMN eracun_greska TEXT",
+    "ALTER TABLE invoices ADD COLUMN eracun_vrijeme TEXT",
 ]
 
 

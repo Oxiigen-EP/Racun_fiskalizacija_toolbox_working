@@ -17,6 +17,8 @@ from PySide6.QtGui import QColor, QPalette
 import db
 from fontovi import get_font
 from fiskalizacija import Fiskalizacija
+import eracun_fisk as ef
+import eracun_tok
 from format_util import fmt_iznos, parse_iznos
 from novac import (izracun_stavke, ukupno_stavki, pdv_grupe_iz_stavki,
                    u_centima)
@@ -289,6 +291,12 @@ class PregledRacunaWidget(QWidget):
         osvjezi_btn.clicked.connect(self.osvjezi)
         filter_layout.addWidget(osvjezi_btn)
 
+        self.odbijanje_btn = QPushButton("🚫  Odbijanje eRačuna")
+        self.odbijanje_btn.setToolTip(
+            "Fiskalizacija 2.0: evidentira odbijanje zaprimljenog eRačuna")
+        self.odbijanje_btn.clicked.connect(self._eracun_odbijanje_klik)
+        filter_layout.addWidget(self.odbijanje_btn)
+
         layout.addLayout(filter_layout)
 
         # ── Tablica ──────────────────────────────────────────────────────
@@ -359,6 +367,13 @@ class PregledRacunaWidget(QWidget):
         self.naplata_btn.setEnabled(False)
         self.naplata_btn.clicked.connect(self._naplata_klik)
         status_layout.addWidget(self.naplata_btn)
+        self.eracun_naplata_btn = QPushButton("📨  Naplata u PU")
+        self.eracun_naplata_btn.setFixedWidth(130)
+        self.eracun_naplata_btn.setEnabled(False)
+        self.eracun_naplata_btn.setToolTip(
+            "Fiskalizacija 2.0: evidentira naplatu eRačuna u Poreznoj upravi")
+        self.eracun_naplata_btn.clicked.connect(self._eracun_naplata_klik)
+        status_layout.addWidget(self.eracun_naplata_btn)
         status_layout.addStretch()
 
         self.ukupno_label = QLabel("")
@@ -381,7 +396,9 @@ class PregledRacunaWidget(QWidget):
                     u_sustavu_pdv, nacin_placanja,
                     fiskaliziran, jir, zki, oznaka_pp, oznaka_nu,
                     operater, datum_kreiranja, placeno, datum_naplate,
-                    pravna_osoba, vrijeme_izdavanja, greska_fisk
+                    pravna_osoba, vrijeme_izdavanja, greska_fisk,
+                    eracun_status, eracun_greska,
+                    eracun_naplata_status, eracun_naplata_greska
                 FROM invoices
                 ORDER BY id DESC
             """).fetchall()
@@ -487,7 +504,7 @@ class PregledRacunaWidget(QWidget):
             if fiskaliziran:
                 fisk_tekst, tip = "✅", "Fiskalizirano"
             elif pravna_osoba:
-                fisk_tekst, tip = "—", "Pravna osoba: račun se ne fiskalizira"
+                fisk_tekst, tip = eracun_tok.opis_statusa(r[20], r[21])
             else:
                 fisk_tekst = "⚠️"
                 tip = greska_fisk or "Nije fiskalizirano"
@@ -556,16 +573,129 @@ class PregledRacunaWidget(QWidget):
         self.pdf_btn.setEnabled(ima)
         r = self._odabrani_racun()
         self.fisk_btn.setEnabled(
-            r is not None and not r[8] and not r[17])
+            r is not None and not r[8]
+            and (not r[17] or self._eracun_moze_slati(r)))
         self.naplata_btn.setEnabled(r is not None)
+        self.eracun_naplata_btn.setEnabled(
+            r is not None and bool(r[15]) and r[20] == eracun_tok.STATUS_POSLAN
+            and r[22] != eracun_tok.STATUS_POSLAN)
         if r is not None and r[15]:
             self.naplata_btn.setText("↩️  Poništi naplatu")
         else:
             self.naplata_btn.setText("💶  Označi naplaćeno")
 
+    def _eracun_moze_slati(self, r):
+        """Pravna osoba: eRačun se može poslati kad je uključena Fiskalizacija 2.0
+        u postavkama i još nije evidentiran."""
+        return bool(self.window().config.get("eracun_fiskalizacija")
+                    and r[20] != eracun_tok.STATUS_POSLAN)
+
+    def _eracun_naplata_klik(self):
+        r = self._odabrani_racun()
+        if r is None:
+            return
+        if not self.window().config.get("eracun_fiskalizacija"):
+            QMessageBox.information(
+                self, "eRačun",
+                "Fiskalizacija 2.0 nije uključena (Postavke → Fiskalizacija 2.0).")
+            return
+        self._posalji_naplatu(r[0], r[1])
+
+    def _posalji_naplatu(self, invoice_id, broj):
+        ok, poruka = self.window().posalji_eracun_naplatu(invoice_id)
+        self.osvjezi()
+        if ok:
+            QMessageBox.information(self, "Naplata eRačuna", poruka)
+        else:
+            QMessageBox.warning(self, "Naplata eRačuna",
+                                f"Račun {broj}: {poruka or 'slanje nije uspjelo.'}")
+
+    def _eracun_odbijanje_klik(self):
+        """Odbijanje zaprimljenog eRačuna: podaci se unose ručno (aplikacija
+        ne vodi ulazne račune)."""
+        win = self.window()
+        if not win.config.get("eracun_fiskalizacija"):
+            QMessageBox.information(
+                self, "eRačun",
+                "Fiskalizacija 2.0 nije uključena (Postavke → Fiskalizacija 2.0).")
+            return
+        from PySide6.QtWidgets import QDialog, QDialogButtonBox
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Odbijanje zaprimljenog eRačuna")
+        form = QFormLayout(dlg)
+        broj = QLineEdit()
+        broj.setPlaceholderText("Broj zaprimljenog eRačuna")
+        oib_izd = QLineEdit()
+        oib_izd.setMaxLength(11)
+        oib_izd.setPlaceholderText("OIB izdavatelja eRačuna")
+        datum_izd = NoScrollDateEdit(QDate.currentDate())
+        datum_izd.setDisplayFormat("dd.MM.yyyy")
+        datum_izd.setCalendarPopup(True)
+        datum_odb = NoScrollDateEdit(QDate.currentDate())
+        datum_odb.setDisplayFormat("dd.MM.yyyy")
+        datum_odb.setCalendarPopup(True)
+        vrsta = NoScrollComboBox()
+        vrsta.addItem("Neusklađenost podataka koji ne utječu na obračun poreza", "N")
+        vrsta.addItem("Neusklađenost podataka koji utječu na obračun poreza", "U")
+        vrsta.addItem("Ostalo", "O")
+        razlog = QLineEdit()
+        razlog.setMaxLength(1024)
+        razlog.setPlaceholderText("Razlog odbijanja (obavezno)")
+        form.addRow("Broj eRačuna:", broj)
+        form.addRow("OIB izdavatelja:", oib_izd)
+        form.addRow("Datum izdavanja:", datum_izd)
+        form.addRow("Datum odbijanja:", datum_odb)
+        form.addRow("Vrsta razloga:", vrsta)
+        form.addRow("Razlog:", razlog)
+        gumbi = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        gumbi.accepted.connect(dlg.accept)
+        gumbi.rejected.connect(dlg.reject)
+        form.addRow(gumbi)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        podaci = {
+            "broj_dokumenta": broj.text().strip(),
+            "datum_izdavanja": datum_izd.date().toString("dd.MM.yyyy"),
+            "oib_izdavatelja": oib_izd.text().strip(),
+            "oib_primatelja": win.config.get("oib", ""),
+            "datum_odbijanja": datum_odb.date().toString("dd.MM.yyyy"),
+            "vrsta_razloga": vrsta.currentData(),
+            "razlog": razlog.text().strip(),
+        }
+        if not podaci["broj_dokumenta"]:
+            QMessageBox.warning(self, "Odbijanje eRačuna", "Unesite broj eRačuna.")
+            return
+        ok, poruka = win.posalji_eracun_odbijanje(podaci)
+        if ok:
+            QMessageBox.information(self, "Odbijanje eRačuna", poruka)
+        else:
+            QMessageBox.warning(self, "Odbijanje eRačuna", poruka or "Slanje nije uspjelo.")
+
+    def _eracun_klik(self, r):
+        if not self._eracun_moze_slati(r):
+            return
+        invoice_id, broj = r[0], r[1]
+        odg = QMessageBox.question(
+            self, "Slanje eRačuna",
+            f"Poslati račun {broj} Poreznoj upravi kao izlazni eRačun?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes)
+        if odg != QMessageBox.StandardButton.Yes:
+            return
+        ok, poruka = self.window().posalji_eracun(invoice_id)
+        self.osvjezi()
+        if ok:
+            QMessageBox.information(self, "eRačun", poruka)
+        else:
+            QMessageBox.warning(self, "eRačun", poruka or "Slanje nije uspjelo.")
+
     def _fisk_klik(self):
         r = self._odabrani_racun()
-        if r is None or r[8] or r[17]:
+        if r is None or r[8]:
+            return
+        if r[17]:
+            self._eracun_klik(r)
             return
         invoice_id, broj = r[0], r[1]
         odg = QMessageBox.question(
@@ -645,6 +775,16 @@ class PregledRacunaWidget(QWidget):
             conn, cursor, invoice_id, datum_edit.date().toString("dd.MM.yyyy"))
         if not ok:
             QMessageBox.warning(self, "Naplata", poruka)
+        elif (self.window().config.get("eracun_fiskalizacija")
+              and r[20] == eracun_tok.STATUS_POSLAN
+              and r[22] != eracun_tok.STATUS_POSLAN):
+            odg = QMessageBox.question(
+                self, "Naplata eRačuna",
+                f"Evidentirati naplatu računa {broj} i u Poreznoj upravi?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes)
+            if odg == QMessageBox.StandardButton.Yes:
+                self._posalji_naplatu(invoice_id, broj)
         self.osvjezi()
 
     def _otvori_detalje(self):
@@ -1457,8 +1597,14 @@ class BillingApp(QWidget):
         pp_nu_layout.addWidget(self.nu_input)
         firma_layout.addRow("PP / NU:", pp_nu_widget)
 
+        # Gumb za spremanje podataka izdavatelja kao zadanih (kao u prod verziji)
+        spremi_izdavatelja_btn = QPushButton("💾  Spremi kao zadano")
+        spremi_izdavatelja_btn.setObjectName("dangerBtn")
+        spremi_izdavatelja_btn.clicked.connect(self.spremi_konfiguraciju)
+        firma_layout.addRow(spremi_izdavatelja_btn)
+
         firma_group.setLayout(firma_layout)
-        postavke_layout.addWidget(firma_group)
+        stranke_layout.addWidget(firma_group)
 
         # Kupac
         kupac_group = QGroupBox("Kupac")
@@ -1539,6 +1685,31 @@ class BillingApp(QWidget):
         red_trg.addWidget(self.etsy_odspoji_btn)
         etsy_layout.addRow("Povezane trgovine:", red_trg)
         postavke_layout.addWidget(etsy_group)
+
+        # Fiskalizacija 2.0: slanje računa pravnim osobama kao eRačun
+        eracun_group = QGroupBox("Fiskalizacija 2.0 (eRačun)")
+        eracun_layout = QFormLayout(eracun_group)
+        eracun_layout.setSpacing(8)
+        self.eracun_check = QCheckBox(
+            "Računi pravnim osobama šalju se Poreznoj upravi kao eRačun")
+        self.eracun_check.setChecked(bool(self.config.get("eracun_fiskalizacija")))
+        eracun_layout.addRow(self.eracun_check)
+        self.eracun_kpd_input = QLineEdit()
+        self.eracun_kpd_input.setText(self.config.get("eracun_kpd", ""))
+        self.eracun_kpd_input.setPlaceholderText("npr. 62.01.11 (KPD 2025 oznaka usluge)")
+        eracun_layout.addRow("KPD oznaka:", self.eracun_kpd_input)
+        self.eracun_url_input = QLineEdit()
+        self.eracun_url_input.setText(self.config.get("eracun_url", ""))
+        self.eracun_url_input.setPlaceholderText(
+            "Prazno = zadano. Portal za testiranje: " + ef.URL_CT_PORTAL)
+        eracun_layout.addRow("Adresa servisa:", self.eracun_url_input)
+        eracun_info = QLabel(
+            "Uključi tek kad Fiskalizacija 2.0 počne (1. 1. 2027.) ili za testno "
+            "okruženje. Ne uključuj ako eRačun fiskalizira tvoj informacijski posrednik.")
+        eracun_info.setWordWrap(True)
+        eracun_info.setStyleSheet("font-size: 10px; font-style: italic;")
+        eracun_layout.addRow(eracun_info)
+        postavke_layout.addWidget(eracun_group)
 
         izgled_group = QGroupBox("Izgled")
         izgled_layout = QHBoxLayout(izgled_group)
@@ -1647,7 +1818,7 @@ class BillingApp(QWidget):
         self.operater_input.setPlaceholderText("Ime i prezime operatera")
         self.operater_input.setFixedWidth(250)
         self.operater_input.setText(self.config.get("operater", ""))
-        firma_layout.addRow("Operater:", self.operater_input)
+        racun_layout.addRow("Operater:", self.operater_input)
 
         racun_group.setLayout(racun_layout)
         main_layout.addWidget(racun_group)
@@ -2224,6 +2395,9 @@ class BillingApp(QWidget):
             "oznaka_pp": self.pp_input.text().strip(),
             "oznaka_nu": self.nu_input.text().strip(),
             "operater": self.operater_input.text().strip(),
+            "eracun_fiskalizacija": self.eracun_check.isChecked(),
+            "eracun_kpd": self.eracun_kpd_input.text().strip(),
+            "eracun_url": self.eracun_url_input.text().strip(),
             "etsy_api_kljuc": self.etsy_kljuc_input.text().strip(),
             "etsy_redirect": self.etsy_redirect_input.text().strip()
             or etsy.ZADANI_REDIRECT,
@@ -2403,9 +2577,11 @@ class BillingApp(QWidget):
 
         jir = None
         zki = None
+        eracun_poruka = ""
 
         if pravna_osoba:
-            # Pravna osoba — samo spremi, bez fiskalizacije
+            # Pravna osoba — račun u krajnjoj potrošnji se ne fiskalizira; od
+            # 1. 1. 2027. (opcija u postavkama) šalje se kao eRačun
             print(f"📄 Račun #{invoice_id} kreiran bez fiskalizacije (pravna osoba)")
             zki = hashlib.md5(
                 f"{oib}{invoice_id}{ukupan_iznos}".encode()).hexdigest()
@@ -2415,6 +2591,9 @@ class BillingApp(QWidget):
                 WHERE id=?
             """, (zki, now.isoformat(), invoice_id))
             conn.commit()
+            if self.config.get("eracun_fiskalizacija"):
+                ok_e, poruka_e = self.posalji_eracun(invoice_id, pdv_oslobodenje)
+                eracun_poruka = "\n" + ("✅ " if ok_e else "⚠️ eRačun: ") + (poruka_e or "")
 
         elif self.fiskalizacija:
             print(f"\n📤 Fiskalizacija računa #{invoice_id}...")
@@ -2453,7 +2632,9 @@ class BillingApp(QWidget):
 
         # Poruka o statusu
         if pravna_osoba:
-            status = "📄 Račun kreiran (pravna osoba, bez fiskalizacije)"
+            status = ("📄 Račun kreiran (pravna osoba"
+                      + (")" if self.config.get("eracun_fiskalizacija")
+                         else ", bez fiskalizacije)") + eracun_poruka)
         elif jir:
             status = f"✅ Fiskalizirano!\nJIR: {jir}"
         elif self.fiskalizacija:
@@ -2493,7 +2674,9 @@ class BillingApp(QWidget):
         if jir:
             status = f"✅ Fiskalizirano!\nJIR: {jir}"
         elif pravna_osoba:
-            status = "📄 Račun kreiran (pravna osoba, bez fiskalizacije)"
+            status = ("📄 Račun kreiran (pravna osoba"
+                      + (")" if self.config.get("eracun_fiskalizacija")
+                         else ", bez fiskalizacije)") + eracun_poruka)
         elif self.fiskalizacija:
             status = ("⚠️ JIR nije dobiven: "
                       f"{self.fiskalizacija.zadnja_greska or 'nepoznata greška'}\n"
@@ -2541,6 +2724,52 @@ class BillingApp(QWidget):
         # Reset tablice stavki
         self.stavke_widget.tabla.setRowCount(0)
         self.stavke_widget.dodaj_stavku()
+
+    def _eracun_klijent(self):
+        if not self.fiskalizacija:
+            return None
+        return eracun_tok.napravi_klijent(
+            self.fiskalizacija, self.demo_mode, self.config, BASE_DIR)
+
+    def posalji_eracun_naplatu(self, invoice_id: int):
+        """eIzvještavanje: naplata poslanog eRačuna. Vraća (uspjeh, poruka)."""
+        try:
+            klijent = self._eracun_klijent()
+            if klijent is None:
+                return False, "Certifikat nije inicijaliziran."
+            ok, poruka = eracun_tok.posalji_naplatu(
+                conn, invoice_id, klijent, self.config)
+        except Exception as e:
+            return False, f"Naplata nije poslana: {e}"
+        if ok:
+            backup_baze()
+        return ok, poruka
+
+    def posalji_eracun_odbijanje(self, podaci: dict):
+        """eIzvještavanje: odbijanje zaprimljenog eRačuna. Vraća (uspjeh, poruka)."""
+        try:
+            klijent = self._eracun_klijent()
+            if klijent is None:
+                return False, "Certifikat nije inicijaliziran."
+            return eracun_tok.posalji_odbijanje(klijent, podaci)
+        except Exception as e:
+            return False, f"Odbijanje nije poslano: {e}"
+
+    def posalji_eracun(self, invoice_id: int, tekst_oslobodenja=None):
+        """Fiskalizacija 2.0: šalje račun pravnoj osobi kao izlazni eRačun
+        (EvidentirajERacun). Vraća (uspjeh, poruka)."""
+        if not self.fiskalizacija:
+            return False, "Certifikat nije inicijaliziran."
+        try:
+            klijent = eracun_tok.napravi_klijent(
+                self.fiskalizacija, self.demo_mode, self.config, BASE_DIR)
+            ok, poruka = eracun_tok.posalji_eracun(
+                conn, invoice_id, klijent, self.config, tekst_oslobodenja)
+        except Exception as e:
+            return False, f"eRačun nije poslan: {e}"
+        if ok:
+            backup_baze()
+        return ok, poruka
 
     def ponovno_fiskaliziraj(self, invoice_id: int):
         """Ponovno šalje nefiskalizirani račun s izvornim vremenom izdavanja i
